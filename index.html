@@ -21,7 +21,7 @@
   .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px;}
   .card h2{font-size:16px;margin:0 0 12px;color:var(--main-dark);}
   label{display:block;font-size:13px;color:var(--sub);margin-bottom:4px;margin-top:10px;}
-  select,input[type=date],input[type=text],input[type=number],input[type=time],input[type=file]{
+  select,input[type=date],input[type=text],input[type=number],input[type=time],input[type=file],input[type=month]{
     width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:#fff;
   }
   .menu-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:8px;}
@@ -80,51 +80,131 @@
 <main id="app"></main>
 
 <script>
-/* ===================== データ層 ===================== */
-const STORAGE_KEY = "bentoAppData_v1";
+/* ===================== Supabase 接続設定 ===================== */
+const SUPABASE_URL = "https://kedcbnwofumuvplqaoae.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtlZGNibndvZnVtdXZwbHFhb2FlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUzOTI1MjEsImV4cCI6MjEwMDk2ODUyMX0.HCo6YG6bBqXnEodDYoi4Um97ePYhCljeZNiE7iTAl5E";
 
-function defaultData(){
-  return {
-    employees: [
-      {id:"e1", code:"1001", name:"山田 太郎", dept:"総務部", isAdmin:false},
-      {id:"e2", code:"1002", name:"佐藤 花子", dept:"営業部", isAdmin:false},
-      {id:"e3", code:"1003", name:"鈴木 一郎", dept:"開発部", isAdmin:false},
-      {id:"eadmin", code:"9999", name:"システム管理者", dept:"情報システム部", isAdmin:true},
-      {id:"eadmin2", code:"221323", name:"(氏名未設定)", dept:"", isAdmin:true}
-    ],
-    menu: [
-      {id:"m1", name:"幕の内弁当", price:600},
-      {id:"m2", name:"唐揚げ弁当", price:550},
-      {id:"m3", name:"のり弁当", price:450}
-    ],
-    deadline: {daysBefore:0, time:"09:00"}, // 発注日の(daysBefore)日前 time までに締切（デフォルト: 当日9:00締切）
-    blockedDates: [], // 発注不可日（個別指定）例: ["2026-08-15"]
-    orders: {} // { "YYYY-MM-DD": { employeeId: menuId } }
-  };
-}
-
-function loadData(){
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if(!raw) return defaultData();
+async function sbRequest(path, options){
+  options = options || {};
+  let res;
   try{
-    const d = JSON.parse(raw);
-    // 後方互換のため不足フィールドを補完
-    const def = defaultData();
-    return Object.assign(def, d);
-  }catch(e){ return defaultData(); }
+    res = await fetch(SUPABASE_URL + path, {
+      method: options.method || "GET",
+      headers: Object.assign({
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+        "Content-Type": "application/json"
+      }, options.headers || {}),
+      body: options.body
+    });
+  }catch(networkErr){
+    throw new Error("サーバーに接続できません。しばらくしてから再度お試しください（プロジェクトが一時停止している可能性もあります）。");
+  }
+  let data = null;
+  const text = await res.text();
+  if(text){
+    try{ data = JSON.parse(text); }catch(e){ data = text; }
+  }
+  if(!res.ok){
+    const err = new Error((data && data.message) ? data.message : ("通信エラー（HTTP " + res.status + "）"));
+    err.code = data && data.code;
+    throw err;
+  }
+  return data;
 }
 
-function saveData(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function sbSelect(table, query){
+  return sbRequest("/rest/v1/" + table + "?select=*" + (query ? ("&" + query) : ""));
+}
 
-let state = loadData();
+function sbRpc(fn, params){
+  return sbRequest("/rest/v1/rpc/" + fn, {method:"POST", body: JSON.stringify(params || {})});
+}
+
+function friendlyError(e){
+  if(e.code === "23505") return "その値は既に使用されています（重複）。";
+  if(e.message === "cannot_delete_last_admin") return "最後の管理者アカウントは削除・降格できません。先に別の管理者を設定してください。";
+  if(e.message === "not_admin") return "管理者権限がありません。";
+  if(e.message === "invalid_session") return "セッションの有効期限が切れました。再度ログインしてください。";
+  return "エラーが発生しました: " + e.message;
+}
+
+function mapEmployee(row){
+  return { id: row.id, code: row.code, name: row.name, dept: row.dept, isAdmin: row.is_admin };
+}
 
 /* ===================== 祝日データ（2024年〜2032年、事前計算・振替休日/国民の休日を含む） ===================== */
 const HOLIDAYS = {"2024-01-01":"元日", "2024-01-08":"成人の日", "2024-02-11":"建国記念の日", "2024-02-12":"振替休日", "2024-02-23":"天皇誕生日", "2024-03-20":"春分の日", "2024-04-29":"昭和の日", "2024-05-03":"憲法記念日", "2024-05-04":"みどりの日", "2024-05-05":"こどもの日", "2024-05-06":"振替休日", "2024-07-15":"海の日", "2024-08-11":"山の日", "2024-08-12":"振替休日", "2024-09-16":"敬老の日", "2024-09-22":"秋分の日", "2024-09-23":"振替休日", "2024-10-14":"スポーツの日", "2024-11-03":"文化の日", "2024-11-04":"振替休日", "2024-11-23":"勤労感謝の日", "2025-01-01":"元日", "2025-01-13":"成人の日", "2025-02-11":"建国記念の日", "2025-02-23":"天皇誕生日", "2025-02-24":"振替休日", "2025-03-20":"春分の日", "2025-04-29":"昭和の日", "2025-05-03":"憲法記念日", "2025-05-04":"みどりの日", "2025-05-05":"こどもの日", "2025-05-06":"振替休日", "2025-07-21":"海の日", "2025-08-11":"山の日", "2025-09-15":"敬老の日", "2025-09-23":"秋分の日", "2025-10-13":"スポーツの日", "2025-11-03":"文化の日", "2025-11-23":"勤労感謝の日", "2025-11-24":"振替休日", "2026-01-01":"元日", "2026-01-12":"成人の日", "2026-02-11":"建国記念の日", "2026-02-23":"天皇誕生日", "2026-03-20":"春分の日", "2026-04-29":"昭和の日", "2026-05-03":"憲法記念日", "2026-05-04":"みどりの日", "2026-05-05":"こどもの日", "2026-05-06":"振替休日", "2026-07-20":"海の日", "2026-08-11":"山の日", "2026-09-21":"敬老の日", "2026-09-22":"国民の休日", "2026-09-23":"秋分の日", "2026-10-12":"スポーツの日", "2026-11-03":"文化の日", "2026-11-23":"勤労感謝の日", "2027-01-01":"元日", "2027-01-11":"成人の日", "2027-02-11":"建国記念の日", "2027-02-23":"天皇誕生日", "2027-03-21":"春分の日", "2027-03-22":"振替休日", "2027-04-29":"昭和の日", "2027-05-03":"憲法記念日", "2027-05-04":"みどりの日", "2027-05-05":"こどもの日", "2027-07-19":"海の日", "2027-08-11":"山の日", "2027-09-20":"敬老の日", "2027-09-23":"秋分の日", "2027-10-11":"スポーツの日", "2027-11-03":"文化の日", "2027-11-23":"勤労感謝の日", "2028-01-01":"元日", "2028-01-10":"成人の日", "2028-02-11":"建国記念の日", "2028-02-23":"天皇誕生日", "2028-03-20":"春分の日", "2028-04-29":"昭和の日", "2028-05-03":"憲法記念日", "2028-05-04":"みどりの日", "2028-05-05":"こどもの日", "2028-07-17":"海の日", "2028-08-11":"山の日", "2028-09-18":"敬老の日", "2028-09-22":"秋分の日", "2028-10-09":"スポーツの日", "2028-11-03":"文化の日", "2028-11-23":"勤労感謝の日", "2029-01-01":"元日", "2029-01-08":"成人の日", "2029-02-11":"建国記念の日", "2029-02-12":"振替休日", "2029-02-23":"天皇誕生日", "2029-03-20":"春分の日", "2029-04-29":"昭和の日", "2029-04-30":"振替休日", "2029-05-03":"憲法記念日", "2029-05-04":"みどりの日", "2029-05-05":"こどもの日", "2029-07-16":"海の日", "2029-08-11":"山の日", "2029-09-17":"敬老の日", "2029-09-23":"秋分の日", "2029-09-24":"振替休日", "2029-10-08":"スポーツの日", "2029-11-03":"文化の日", "2029-11-23":"勤労感謝の日", "2030-01-01":"元日", "2030-01-14":"成人の日", "2030-02-11":"建国記念の日", "2030-02-23":"天皇誕生日", "2030-03-20":"春分の日", "2030-04-29":"昭和の日", "2030-05-03":"憲法記念日", "2030-05-04":"みどりの日", "2030-05-05":"こどもの日", "2030-05-06":"振替休日", "2030-07-15":"海の日", "2030-08-11":"山の日", "2030-09-16":"敬老の日", "2030-09-23":"秋分の日", "2030-10-14":"スポーツの日", "2030-11-03":"文化の日", "2030-11-04":"振替休日", "2030-11-23":"勤労感謝の日", "2031-01-01":"元日", "2031-01-13":"成人の日", "2031-02-11":"建国記念の日", "2031-02-23":"天皇誕生日", "2031-02-24":"振替休日", "2031-03-21":"春分の日", "2031-04-29":"昭和の日", "2031-05-03":"憲法記念日", "2031-05-04":"みどりの日", "2031-05-05":"こどもの日", "2031-05-06":"振替休日", "2031-07-21":"海の日", "2031-08-11":"山の日", "2031-09-15":"敬老の日", "2031-09-23":"秋分の日", "2031-10-13":"スポーツの日", "2031-11-03":"文化の日", "2031-11-23":"勤労感謝の日", "2031-11-24":"振替休日", "2032-01-01":"元日", "2032-01-12":"成人の日", "2032-02-11":"建国記念の日", "2032-02-23":"天皇誕生日", "2032-03-20":"春分の日", "2032-04-29":"昭和の日", "2032-05-03":"憲法記念日", "2032-05-04":"みどりの日", "2032-05-05":"こどもの日", "2032-07-19":"海の日", "2032-08-11":"山の日", "2032-09-20":"敬老の日", "2032-09-21":"国民の休日", "2032-09-22":"秋分の日", "2032-10-11":"スポーツの日", "2032-11-03":"文化の日", "2032-11-23":"勤労感謝の日"};
-// 2033年以降の日付は祝日データが未登録のため、通常の平日として扱われます（土日判定のみ有効）。必要に応じてこのリストを更新してください。
+// 2033年以降の日付は祝日データが未登録のため、通常の平日として扱われます（土日判定は別途blockedDatesで対応可能）。必要に応じてこのリストを更新してください。
+
+/* ===================== データ層（Supabase） ===================== */
+let state = {
+  menu: [],
+  deadline: {daysBefore:0, time:"09:00"},
+  blockedDates: [],
+  orders: {},     // キャッシュ: { "YYYY-MM-DD": { employeeId: menuId } }（ログイン中の本人の分のみ）
+  employees: []   // 管理タブ「対象者リスト」を開いたときだけ取得
+};
+
+const SESSION_STORAGE_KEY = "bentoAppSession_v1";
+let session = null; // { token, employeeId, name, dept, isAdmin, code }
+
+function loadStoredSession(){
+  try{
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
+function persistSession(){
+  if(session) localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  else localStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+async function loginWithCode(code){
+  const trimmed = (code||"").trim();
+  if(!trimmed){ loginError = "社員CDを入力してください"; return false; }
+  const rows = await sbRpc("rpc_login", {p_code: trimmed});
+  if(!rows || rows.length === 0){
+    loginError = "該当する社員CDが見つかりません";
+    return false;
+  }
+  const r = rows[0];
+  session = { token: r.session_token, employeeId: r.employee_id, name: r.name, dept: r.dept, isAdmin: r.is_admin, code: trimmed };
+  persistSession();
+  loginError = "";
+  return true;
+}
+
+async function logout(){
+  if(session){
+    try{ await sbRpc("rpc_logout", {p_token: session.token}); }catch(e){ /* ベストエフォート */ }
+  }
+  session = null;
+  persistSession();
+  state.orders = {};
+  state.employees = [];
+}
+
+async function loadMenu(){
+  state.menu = await sbSelect("menu", "order=name.asc");
+}
+
+async function loadSettings(){
+  const s = await sbRpc("rpc_get_settings", {p_token: session.token});
+  state.deadline = { daysBefore: s.deadline_days_before, time: s.deadline_time };
+  state.blockedDates = s.blocked_dates || [];
+}
+
+async function loadMyOrdersForMonth(yearMonth){
+  const rows = await sbRpc("rpc_get_my_orders", {p_token: session.token, p_year_month: yearMonth});
+  daysInMonth(yearMonth).forEach(d=>{ if(state.orders[d]) delete state.orders[d][session.employeeId]; });
+  rows.forEach(r=>{
+    if(!state.orders[r.date]) state.orders[r.date] = {};
+    state.orders[r.date][session.employeeId] = r.menu_id;
+  });
+}
 
 /* ===================== ユーティリティ ===================== */
-function uid(prefix){ return prefix + Math.random().toString(36).slice(2,9); }
-
 function dayOfWeek(dateStr){
   return new Date(dateStr+"T00:00:00").getDay(); // 0:日 ... 6:土
 }
@@ -170,30 +250,6 @@ function fmtDeadline(dateStr){
   return `${dl.getMonth()+1}/${dl.getDate()} ${String(dl.getHours()).padStart(2,"0")}:${String(dl.getMinutes()).padStart(2,"0")}`;
 }
 
-/* ===================== 画面共通 ===================== */
-let currentTab = "order";
-let currentAdminSub = "employees";
-
-const app = document.getElementById("app");
-
-document.getElementById("mainNav").addEventListener("click", (e)=>{
-  if(e.target.tagName !== "BUTTON") return;
-  currentTab = e.target.dataset.tab;
-  [...document.getElementById("mainNav").children].forEach(b=>b.classList.toggle("active", b===e.target));
-  render();
-});
-
-function render(){
-  if(currentTab === "order") renderOrderTab();
-  else renderAdminTab();
-}
-
-/* ===================== 発注タブ（社員向け） ===================== */
-let loggedInEmployee = "";  // ログイン中の社員ID（社員CDで認証）
-let loginError = "";
-let calendarYearMonth = todayStr().slice(0,7); // "YYYY-MM"
-let batchMessage = "";
-
 function shiftMonth(ym, delta){
   let [y,m] = ym.split("-").map(Number);
   m += delta;
@@ -208,14 +264,84 @@ function daysInMonth(ym){
   return Array.from({length:last}, (_,i)=> `${y}-${String(m).padStart(2,"0")}-${String(i+1).padStart(2,"0")}`);
 }
 
+function existingMenuFor(empId, dateStr){
+  return (state.orders[dateStr] && state.orders[dateStr][empId]) || null;
+}
+
+function downloadFile(filename, content){
+  const blob = new Blob(["﻿"+content], {type:"text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* ===================== 画面共通（読み込み中・エラー制御） ===================== */
+let currentTab = "order";
+let currentAdminSub = "employees";
+let isLoading = false;
+let loadError = "";
+
+const app = document.getElementById("app");
+
+document.getElementById("mainNav").addEventListener("click", (e)=>{
+  if(e.target.tagName !== "BUTTON") return;
+  currentTab = e.target.dataset.tab;
+  [...document.getElementById("mainNav").children].forEach(b=>b.classList.toggle("active", b===e.target));
+  if(currentTab === "admin" && session && session.isAdmin){
+    withLoading(()=> loadAdminSubData(currentAdminSub));
+  } else {
+    render();
+  }
+});
+
+async function withLoading(fn){
+  isLoading = true; render();
+  try{
+    await fn();
+    loadError = "";
+  }catch(e){
+    if(e.message === "invalid_session"){
+      session = null; persistSession();
+      loginError = "セッションの有効期限が切れました。再度ログインしてください。";
+      loadError = "";
+    } else {
+      loadError = e.message || String(e);
+    }
+  }
+  isLoading = false;
+  render();
+}
+
+function render(){
+  if(isLoading){
+    app.innerHTML = `<div class="card"><div class="hint">読み込み中...</div></div>`;
+    return;
+  }
+  if(loadError){
+    app.innerHTML = `
+      <div class="card">
+        <div class="status-box status-lock">${loadError}</div>
+        <button class="secondary" id="reloadBtn">再読み込み</button>
+      </div>`;
+    document.getElementById("reloadBtn").onclick = ()=>{ loadError=""; boot(); };
+    return;
+  }
+  if(currentTab === "order") renderOrderTab();
+  else renderAdminTab();
+}
+
+/* ===================== 発注タブ（社員向け） ===================== */
+let loginError = "";
+let calendarYearMonth = todayStr().slice(0,7); // "YYYY-MM"
+let batchMessage = "";
+
 function renderOrderTab(){
-  if(!loggedInEmployee){
+  if(!session){
     renderLoginScreen();
     return;
   }
-
-  const emp = state.employees.find(x=>x.id===loggedInEmployee);
-  if(!emp){ loggedInEmployee = ""; renderLoginScreen(); return; }
 
   const dates = daysInMonth(calendarYearMonth);
   const [ymYear, ymMonth] = calendarYearMonth.split("-");
@@ -225,7 +351,7 @@ function renderOrderTab(){
       <div class="row" style="align-items:center;">
         <div>
           <div class="hint" style="margin:0;">ログイン中</div>
-          <div style="font-size:16px;font-weight:bold;">${emp.name}（${emp.dept} / 社員CD: ${emp.code||"―"}）</div>
+          <div style="font-size:16px;font-weight:bold;">${session.name}（${session.dept} / 社員CD: ${session.code||"―"}）</div>
         </div>
         <button class="secondary" id="logoutBtn" style="flex:0 0 auto;">ログアウト（別の人が使う）</button>
       </div>
@@ -254,7 +380,7 @@ function renderOrderTab(){
           const blockedDate = isBlockedDate(d);
           const nonOrderable = blockedDate || !!holiday;
           const locked = isLocked(d);
-          const existing = existingMenuFor(loggedInEmployee, d);
+          const existing = existingMenuFor(session.employeeId, d);
           const existingMenuName = existing ? (state.menu.find(m=>m.id===existing)?.name || "―") : null;
           const isToday = d === todayStr();
           const todayCls = isToday ? " row-today" : "";
@@ -293,19 +419,28 @@ function renderOrderTab(){
 
     <div class="card">
       <h2>${ymYear}年${Number(ymMonth)}月の発注回数</h2>
-      <div class="status-box status-ok">今月は ${dates.filter(d=>existingMenuFor(loggedInEmployee, d)).length} 回発注しています</div>
+      <div class="status-box status-ok">今月は ${dates.filter(d=>existingMenuFor(session.employeeId, d)).length} 回発注しています</div>
     </div>
   `;
 
   document.getElementById("logoutBtn").onclick = ()=>{
-    loggedInEmployee = ""; loginError = ""; batchMessage = ""; render();
+    withLoading(async ()=>{ await logout(); batchMessage=""; });
   };
   document.getElementById("monthSelect").onchange = (e)=>{
     if(e.target.value) calendarYearMonth = e.target.value;
-    batchMessage=""; render();
+    batchMessage="";
+    withLoading(()=> loadMyOrdersForMonth(calendarYearMonth));
   };
-  document.getElementById("prevMonthBtn").onclick = ()=>{ calendarYearMonth = shiftMonth(calendarYearMonth, -1); batchMessage=""; render(); };
-  document.getElementById("nextMonthBtn").onclick = ()=>{ calendarYearMonth = shiftMonth(calendarYearMonth, 1); batchMessage=""; render(); };
+  document.getElementById("prevMonthBtn").onclick = ()=>{
+    calendarYearMonth = shiftMonth(calendarYearMonth, -1);
+    batchMessage="";
+    withLoading(()=> loadMyOrdersForMonth(calendarYearMonth));
+  };
+  document.getElementById("nextMonthBtn").onclick = ()=>{
+    calendarYearMonth = shiftMonth(calendarYearMonth, 1);
+    batchMessage="";
+    withLoading(()=> loadMyOrdersForMonth(calendarYearMonth));
+  };
 
   // 今月を表示している場合、本日の行が見える位置まで自動スクロール
   if(calendarYearMonth === todayStr().slice(0,7)){
@@ -326,18 +461,10 @@ function renderOrderTab(){
     };
   });
 
-  document.getElementById("batchOrderBtn").onclick = placeBatchOrders;
-}
-
-// 社員CDでログインを試みる共通処理（発注タブ・管理タブ共通のログイン状態 loggedInEmployee を更新する）
-function attemptLogin(code){
-  const trimmed = (code||"").trim();
-  if(!trimmed){ loginError = "社員CDを入力してください"; return false; }
-  const emp = state.employees.find(e=>e.code === trimmed);
-  if(!emp){ loginError = "該当する社員CDが見つかりません"; return false; }
-  loggedInEmployee = emp.id;
-  loginError = "";
-  return true;
+  document.getElementById("batchOrderBtn").onclick = ()=>{
+    const changes = collectOrderChanges(); // DOMが生きているうちに同期的に取得
+    withLoading(()=> placeBatchOrders(changes));
+  };
 }
 
 function renderLoginScreen(){
@@ -353,61 +480,92 @@ function renderLoginScreen(){
   `;
   const codeInput = document.getElementById("loginCode");
   const doLogin = ()=>{
-    if(attemptLogin(codeInput.value)){ batchMessage = ""; }
-    render();
+    withLoading(async ()=>{
+      const ok = await loginWithCode(codeInput.value);
+      if(ok){
+        await loadSettings();
+        await loadMyOrdersForMonth(calendarYearMonth);
+        batchMessage = "";
+      }
+    });
   };
   document.getElementById("loginBtn").onclick = doLogin;
   codeInput.onkeydown = (e)=>{ if(e.key === "Enter") doLogin(); };
   codeInput.focus();
 }
 
-function existingMenuFor(empId, dateStr){
-  return (state.orders[dateStr] && state.orders[dateStr][empId]) || null;
-}
-
-function placeBatchOrders(){
-  let ordered = 0, cancelled = 0;
+// チェックボックスの状態から変更点を集める。DOMがまだ生きている「クリックされた瞬間」に
+// 同期的に呼び出すこと（withLoadingが読み込み中画面を表示してDOMを差し替えた後だと
+// チェックボックスが消えてしまい、変更点を検出できなくなるため）。
+function collectOrderChanges(){
+  const changes = [];
   daysInMonth(calendarYearMonth).forEach(d=>{
-    if(isLocked(d) || isNonOrderableDay(d)) return; // 念のため締切済み・土日祝は無視
+    if(isLocked(d) || isNonOrderableDay(d)) return; // 念のため締切済み・発注不可日は無視
     const checked = document.querySelector(`.calCheckbox[data-date="${d}"]:checked`);
     const menuId = checked ? checked.dataset.menu : null;
-    const existing = existingMenuFor(loggedInEmployee, d);
+    const existing = existingMenuFor(session.employeeId, d);
     if(menuId){
-      if(existing !== menuId){
-        if(!state.orders[d]) state.orders[d] = {};
-        state.orders[d][loggedInEmployee] = menuId;
-        ordered++;
-      }
+      if(existing !== menuId) changes.push({date:d, action:"place", menuId});
     } else if(existing){
-      delete state.orders[d][loggedInEmployee];
-      cancelled++;
+      changes.push({date:d, action:"cancel"});
     }
   });
-  saveData();
+  return changes;
+}
+
+async function placeBatchOrders(changes){
+  let ordered = 0, cancelled = 0, failed = 0;
+  for(const c of changes){
+    try{
+      if(c.action === "place"){
+        await sbRpc("rpc_place_order", {p_token: session.token, p_date: c.date, p_menu_id: c.menuId});
+        if(!state.orders[c.date]) state.orders[c.date] = {};
+        state.orders[c.date][session.employeeId] = c.menuId;
+        ordered++;
+      } else {
+        await sbRpc("rpc_cancel_order", {p_token: session.token, p_date: c.date});
+        if(state.orders[c.date]) delete state.orders[c.date][session.employeeId];
+        cancelled++;
+      }
+    }catch(e){
+      failed++;
+    }
+  }
   const parts = [];
   if(ordered) parts.push(`${ordered}件を発注しました`);
   if(cancelled) parts.push(`${cancelled}件を取り消しました`);
+  if(failed) parts.push(`${failed}件は失敗しました`);
   batchMessage = parts.length ? parts.join(" / ") : "変更はありませんでした";
-  render();
 }
 
 /* ===================== 管理タブ ===================== */
-// 管理タブは発注タブと共通の loggedInEmployee を使用する。
+// 管理タブは発注タブと共通の session を使用する。
 // 未ログインならログインを促し、ログイン済みでも管理者権限（isAdmin）がなければアクセスさせない。
 
+async function loadAdminSubData(sub){
+  if(sub === "employees"){
+    const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
+    state.employees = rows.map(mapEmployee);
+  } else if(sub === "summary"){
+    summaryRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: summaryDate});
+  } else if(sub === "receipt"){
+    receiptRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: receiptDate});
+  }
+  // menu / deadline サブタブは既にグローバルで読み込み済みの state.menu / state.deadline / state.blockedDates を使う
+}
+
 function renderAdminAccessScreen(){
-  const emp = state.employees.find(x=>x.id===loggedInEmployee);
-  if(emp && !emp.isAdmin){
+  if(session && !session.isAdmin){
     app.innerHTML = `
       <div class="card">
         <h2>管理タブ</h2>
-        <div class="status-box status-lock">現在ログイン中の「${emp.name}」は管理者権限を持っていません。</div>
+        <div class="status-box status-lock">現在ログイン中の「${session.name}」は管理者権限を持っていません。</div>
         <div class="hint">管理者権限のある社員CDでログインし直してください。</div>
         <button class="secondary" id="switchAccountBtn">ログアウトして別のアカウントでログイン</button>
       </div>
     `;
     document.getElementById("switchAccountBtn").onclick = ()=>{
-      loggedInEmployee = ""; loginError = ""; render();
+      withLoading(async ()=>{ await logout(); });
     };
     return;
   }
@@ -424,8 +582,15 @@ function renderAdminAccessScreen(){
   `;
   const codeInput = document.getElementById("adminAccessCode");
   const doLogin = ()=>{
-    attemptLogin(codeInput.value);
-    render();
+    withLoading(async ()=>{
+      const ok = await loginWithCode(codeInput.value);
+      if(ok){
+        await loadSettings();
+        if(session.isAdmin){
+          await loadAdminSubData(currentAdminSub);
+        }
+      }
+    });
   };
   document.getElementById("adminAccessBtn").onclick = doLogin;
   codeInput.onkeydown = (e)=>{ if(e.key === "Enter") doLogin(); };
@@ -433,8 +598,7 @@ function renderAdminAccessScreen(){
 }
 
 function renderAdminTab(){
-  const adminEmp = state.employees.find(x=>x.id===loggedInEmployee && x.isAdmin);
-  if(!adminEmp){
+  if(!session || !session.isAdmin){
     renderAdminAccessScreen();
     return;
   }
@@ -444,7 +608,7 @@ function renderAdminTab(){
       <div class="row" style="align-items:center;">
         <div>
           <div class="hint" style="margin:0;">ログイン中（管理者）</div>
-          <div style="font-size:16px;font-weight:bold;">${adminEmp.name}（社員CD: ${adminEmp.code}）</div>
+          <div style="font-size:16px;font-weight:bold;">${session.name}（社員CD: ${session.code}）</div>
         </div>
         <button class="secondary" id="adminLogoutBtn" style="flex:0 0 auto;">ログアウト</button>
       </div>
@@ -459,11 +623,14 @@ function renderAdminTab(){
     <div id="adminContent"></div>
   `;
   document.getElementById("adminLogoutBtn").onclick = ()=>{
-    loggedInEmployee = ""; loginError = ""; render();
+    withLoading(async ()=>{ await logout(); });
   };
   [...document.getElementById("adminSubtabs").children].forEach(b=>{
     b.classList.toggle("active", b.dataset.sub===currentAdminSub);
-    b.onclick = ()=>{ currentAdminSub = b.dataset.sub; renderAdminTab(); };
+    b.onclick = ()=>{
+      currentAdminSub = b.dataset.sub;
+      withLoading(()=> loadAdminSubData(currentAdminSub));
+    };
   });
   const content = document.getElementById("adminContent");
   if(currentAdminSub==="employees") renderEmployeesAdmin(content);
@@ -512,27 +679,37 @@ function renderEmployeesAdmin(container){
       </table>
     </div>
   `;
+
   container.querySelector("#addEmpBtn").onclick = ()=>{
     const code = container.querySelector("#newEmpCode").value.trim();
     const name = container.querySelector("#newEmpName").value.trim();
     const dept = container.querySelector("#newEmpDept").value.trim();
     const isAdmin = container.querySelector("#newEmpIsAdmin").checked;
-    if(!name || !code) { alert("社員CDと氏名は必須です"); return; }
-    if(state.employees.some(e=>e.code === code)){ alert("その社員CDは既に使用されています"); return; }
-    state.employees.push({id:uid("e"), code, name, dept, isAdmin});
-    saveData(); renderAdminTab();
+    if(!name || !code){ alert("社員CDと氏名は必須です"); return; }
+    withLoading(async ()=>{
+      try{
+        await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept, p_is_admin: isAdmin});
+        const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
+        state.employees = rows.map(mapEmployee);
+      }catch(e){ alert(friendlyError(e)); }
+    });
   };
+
   container.querySelectorAll("input[data-field]").forEach(inp=>{
     inp.onchange = ()=>{
-      if(inp.dataset.field === "code"){
-        const dup = state.employees.some(e=>e.id!==inp.dataset.id && e.code===inp.value.trim());
-        if(dup){ alert("その社員CDは既に使用されています"); renderAdminTab(); return; }
-      }
       const emp = state.employees.find(x=>x.id===inp.dataset.id);
-      if(emp) emp[inp.dataset.field] = inp.value;
-      saveData();
+      if(!emp) return;
+      const updated = Object.assign({}, emp, {[inp.dataset.field]: inp.value});
+      withLoading(async ()=>{
+        try{
+          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin});
+          const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
+          state.employees = rows.map(mapEmployee);
+        }catch(e){ alert(friendlyError(e)); }
+      });
     };
   });
+
   container.querySelectorAll(".adminCheckbox").forEach(cb=>{
     cb.onchange = ()=>{
       const emp = state.employees.find(x=>x.id===cb.dataset.id);
@@ -541,50 +718,60 @@ function renderEmployeesAdmin(container){
         const otherAdmins = state.employees.filter(e=>e.isAdmin && e.id!==emp.id).length;
         if(otherAdmins === 0){
           alert("最後の管理者アカウントの権限は外せません。先に別の管理者を設定してください。");
-          renderAdminTab();
+          cb.checked = true;
           return;
         }
       }
-      emp.isAdmin = cb.checked;
-      saveData();
+      const updated = Object.assign({}, emp, {isAdmin: cb.checked});
+      withLoading(async ()=>{
+        try{
+          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin});
+          const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
+          state.employees = rows.map(mapEmployee);
+        }catch(e){ alert(friendlyError(e)); }
+      });
     };
   });
+
   container.querySelectorAll("[data-del]").forEach(btn=>{
     btn.onclick = ()=>{
-      const emp = state.employees.find(x=>x.id===btn.dataset.del);
-      if(emp && emp.isAdmin){
-        const otherAdmins = state.employees.filter(e=>e.isAdmin && e.id!==emp.id).length;
-        if(otherAdmins === 0){
-          alert("最後の管理者アカウントは削除できません。先に別の管理者を設定してください。");
-          return;
-        }
-      }
       if(!confirm("この対象者を削除しますか？")) return;
-      state.employees = state.employees.filter(x=>x.id!==btn.dataset.del);
-      saveData(); renderAdminTab();
+      withLoading(async ()=>{
+        try{
+          await sbRpc("rpc_admin_delete_employee", {p_token: session.token, p_id: btn.dataset.del});
+          const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
+          state.employees = rows.map(mapEmployee);
+        }catch(e){ alert(friendlyError(e)); }
+      });
     };
   });
+
   container.querySelector("#csvInput").onchange = (e)=>{
     const file = e.target.files[0];
     if(!file) return;
     const reader = new FileReader();
     reader.onload = ()=>{
       const lines = reader.result.split(/\r?\n/).map(l=>l.trim()).filter(l=>l);
-      let added = 0, skipped = 0;
-      lines.forEach(line=>{
-        const parts = line.split(",").map(p=>p.trim());
-        if(parts[0] === "社員CD" || parts[0] === "氏名" || parts[0] === "code") return; // ヘッダー行スキップ
-        const [code, name, dept] = parts;
-        if(!code || !name) return;
-        if(state.employees.some(x=>x.code===code)){ skipped++; return; }
-        state.employees.push({id:uid("e"), code, name, dept:dept||"", isAdmin:false});
-        added++;
+      withLoading(async ()=>{
+        let added = 0, skipped = 0;
+        for(const line of lines){
+          const parts = line.split(",").map(p=>p.trim());
+          if(parts[0] === "社員CD" || parts[0] === "氏名" || parts[0] === "code") continue;
+          const [code, name, dept] = parts;
+          if(!code || !name) continue;
+          try{
+            await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept||"", p_is_admin: false});
+            added++;
+          }catch(err){ skipped++; }
+        }
+        const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
+        state.employees = rows.map(mapEmployee);
+        alert(`${added}件を取り込みました${skipped ? `（重複社員CD等 ${skipped}件はスキップ）` : ""}`);
       });
-      saveData(); renderAdminTab();
-      alert(`${added}件を取り込みました${skipped ? `（重複社員CD ${skipped}件はスキップ）` : ""}`);
     };
     reader.readAsText(file, "UTF-8");
   };
+
   container.querySelector("#csvExportBtn").onclick = ()=>{
     const csv = "社員CD,氏名,部署\n" + state.employees.map(e=>`${e.code||""},${e.name},${e.dept}`).join("\n");
     downloadFile("対象者リスト.csv", csv);
@@ -615,25 +802,42 @@ function renderMenuAdmin(container){
       </table>
     </div>
   `;
+
   container.querySelector("#addMenuBtn").onclick = ()=>{
     const name = container.querySelector("#newMenuName").value.trim();
     const price = Number(container.querySelector("#newMenuPrice").value) || 0;
     if(!name) return;
-    state.menu.push({id:uid("m"), name, price});
-    saveData(); renderAdminTab();
+    withLoading(async ()=>{
+      try{
+        await sbRpc("rpc_admin_upsert_menu", {p_token: session.token, p_id: null, p_name: name, p_price: price});
+        state.menu = await sbSelect("menu", "order=name.asc");
+      }catch(e){ alert(friendlyError(e)); }
+    });
   };
+
   container.querySelectorAll("input[data-field]").forEach(inp=>{
     inp.onchange = ()=>{
       const m = state.menu.find(x=>x.id===inp.dataset.id);
-      if(m) m[inp.dataset.field] = inp.dataset.field==="price" ? Number(inp.value) : inp.value;
-      saveData();
+      if(!m) return;
+      const updated = Object.assign({}, m, {[inp.dataset.field]: inp.dataset.field==="price" ? Number(inp.value) : inp.value});
+      withLoading(async ()=>{
+        try{
+          await sbRpc("rpc_admin_upsert_menu", {p_token: session.token, p_id: updated.id, p_name: updated.name, p_price: updated.price});
+          state.menu = await sbSelect("menu", "order=name.asc");
+        }catch(e){ alert(friendlyError(e)); }
+      });
     };
   });
+
   container.querySelectorAll("[data-del]").forEach(btn=>{
     btn.onclick = ()=>{
       if(!confirm("このメニューを削除しますか？")) return;
-      state.menu = state.menu.filter(x=>x.id!==btn.dataset.del);
-      saveData(); renderAdminTab();
+      withLoading(async ()=>{
+        try{
+          await sbRpc("rpc_admin_delete_menu", {p_token: session.token, p_id: btn.dataset.del});
+          state.menu = await sbSelect("menu", "order=name.asc");
+        }catch(e){ alert(friendlyError(e)); }
+      });
     };
   });
 }
@@ -668,45 +872,48 @@ function renderDeadlineAdmin(container){
       </table>
     </div>
   `;
+
   container.querySelector("#saveDlBtn").onclick = ()=>{
-    state.deadline.daysBefore = Number(container.querySelector("#dlDays").value)||0;
-    state.deadline.time = container.querySelector("#dlTime").value || "15:00";
-    saveData();
-    alert("締切設定を保存しました");
+    const days = Number(container.querySelector("#dlDays").value)||0;
+    const time = container.querySelector("#dlTime").value || "15:00";
+    withLoading(async ()=>{
+      const updated = await sbRpc("rpc_admin_update_settings", {p_token: session.token, p_days_before: days, p_time: time, p_blocked_dates: state.blockedDates||[]});
+      state.deadline = { daysBefore: updated.deadline_days_before, time: updated.deadline_time };
+      state.blockedDates = updated.blocked_dates || [];
+    });
   };
+
   container.querySelector("#addBlockedDateBtn").onclick = ()=>{
     const val = container.querySelector("#newBlockedDate").value;
     if(!val) return;
-    if(!state.blockedDates) state.blockedDates = [];
-    if(!state.blockedDates.includes(val)) state.blockedDates.push(val);
-    saveData();
-    renderAdminTab();
+    const newBlocked = Array.from(new Set([...(state.blockedDates||[]), val]));
+    withLoading(async ()=>{
+      const updated = await sbRpc("rpc_admin_update_settings", {p_token: session.token, p_days_before: state.deadline.daysBefore, p_time: state.deadline.time, p_blocked_dates: newBlocked});
+      state.deadline = { daysBefore: updated.deadline_days_before, time: updated.deadline_time };
+      state.blockedDates = updated.blocked_dates || [];
+    });
   };
+
   container.querySelectorAll("[data-del-date]").forEach(btn=>{
     btn.onclick = ()=>{
-      state.blockedDates = (state.blockedDates||[]).filter(d=>d!==btn.dataset.delDate);
-      saveData();
-      renderAdminTab();
+      const newBlocked = (state.blockedDates||[]).filter(d=>d!==btn.dataset.delDate);
+      withLoading(async ()=>{
+        const updated = await sbRpc("rpc_admin_update_settings", {p_token: session.token, p_days_before: state.deadline.daysBefore, p_time: state.deadline.time, p_blocked_dates: newBlocked});
+        state.deadline = { daysBefore: updated.deadline_days_before, time: updated.deadline_time };
+        state.blockedDates = updated.blocked_dates || [];
+      });
     };
   });
 }
 
 /* --- 発注集計・発注書 --- */
 let summaryDate = todayStr();
+let summaryRows = [];
 
 function renderSummaryAdmin(container){
-  const dayOrders = state.orders[summaryDate] || {};
-  const rows = Object.entries(dayOrders).map(([empId, menuId])=>{
-    const emp = state.employees.find(e=>e.id===empId);
-    const menu = state.menu.find(m=>m.id===menuId);
-    return {emp, menu};
-  }).filter(r=>r.emp); // 削除済み社員は除外
-
+  const rows = summaryRows;
   const countsByMenu = {};
-  rows.forEach(r=>{
-    if(!r.menu) return;
-    countsByMenu[r.menu.id] = (countsByMenu[r.menu.id]||0) + 1;
-  });
+  rows.forEach(r=>{ countsByMenu[r.menu_id] = (countsByMenu[r.menu_id]||0) + 1; });
 
   container.innerHTML = `
     <div class="card no-print">
@@ -728,13 +935,13 @@ function renderSummaryAdmin(container){
           <td>合計</td>
           <td>${rows.length}</td>
           <td></td>
-          <td>¥${rows.reduce((s,r)=>s + (r.menu?r.menu.price:0),0)}</td>
+          <td>¥${rows.reduce((s,r)=>s + (r.price||0),0)}</td>
         </tr>
       </table>
       <h2 style="margin-top:20px;">発注者一覧</h2>
       <table>
         <tr><th>氏名</th><th>部署</th><th>メニュー</th></tr>
-        ${rows.map(r=>`<tr><td>${r.emp.name}</td><td>${r.emp.dept}</td><td>${r.menu?r.menu.name:"（削除されたメニュー）"}</td></tr>`).join("")}
+        ${rows.map(r=>`<tr><td>${r.name}</td><td>${r.dept}</td><td>${r.menu_name}</td></tr>`).join("")}
       </table>
     </div>
     <div class="no-print" style="margin-top:10px;">
@@ -742,24 +949,23 @@ function renderSummaryAdmin(container){
       <button class="secondary" id="csvSummaryBtn">CSV出力</button>
     </div>
   `;
-  container.querySelector("#summaryDateInput").onchange = (e)=>{ summaryDate = e.target.value; renderAdminTab(); };
+  container.querySelector("#summaryDateInput").onchange = (e)=>{
+    summaryDate = e.target.value;
+    withLoading(async ()=>{ summaryRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: summaryDate}); });
+  };
   container.querySelector("#printSummaryBtn").onclick = ()=> window.print();
   container.querySelector("#csvSummaryBtn").onclick = ()=>{
-    let csv = "氏名,部署,メニュー\n" + rows.map(r=>`${r.emp.name},${r.emp.dept},${r.menu?r.menu.name:""}`).join("\n");
+    let csv = "氏名,部署,メニュー\n" + rows.map(r=>`${r.name},${r.dept},${r.menu_name}`).join("\n");
     downloadFile(`発注一覧_${summaryDate}.csv`, csv);
   };
 }
 
 /* --- 受取確認リスト --- */
 let receiptDate = todayStr();
+let receiptRows = [];
 
 function renderReceiptAdmin(container){
-  const dayOrders = state.orders[receiptDate] || {};
-  const rows = Object.entries(dayOrders).map(([empId, menuId])=>{
-    const emp = state.employees.find(e=>e.id===empId);
-    const menu = state.menu.find(m=>m.id===menuId);
-    return {emp, menu};
-  }).filter(r=>r.emp).sort((a,b)=>a.emp.name.localeCompare(b.emp.name,"ja"));
+  const rows = [...receiptRows].sort((a,b)=>a.name.localeCompare(b.name,"ja"));
 
   container.innerHTML = `
     <div class="card no-print">
@@ -773,9 +979,9 @@ function renderReceiptAdmin(container){
         ${rows.map(r=>`
           <tr>
             <td class="checkbox-col"><span class="checkbox-box"></span></td>
-            <td>${r.emp.name}</td>
-            <td>${r.emp.dept}</td>
-            <td>${r.menu?r.menu.name:"（削除されたメニュー）"}</td>
+            <td>${r.name}</td>
+            <td>${r.dept}</td>
+            <td>${r.menu_name}</td>
           </tr>`).join("")}
       </table>
     </div>
@@ -783,18 +989,11 @@ function renderReceiptAdmin(container){
       <button class="secondary" id="printReceiptBtn">印刷</button>
     </div>
   `;
-  container.querySelector("#receiptDateInput").onchange = (e)=>{ receiptDate = e.target.value; renderAdminTab(); };
+  container.querySelector("#receiptDateInput").onchange = (e)=>{
+    receiptDate = e.target.value;
+    withLoading(async ()=>{ receiptRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: receiptDate}); });
+  };
   container.querySelector("#printReceiptBtn").onclick = ()=> window.print();
-}
-
-/* ===================== 共通ヘルパー ===================== */
-function downloadFile(filename, content){
-  const blob = new Blob(["﻿"+content], {type:"text/csv;charset=utf-8"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
 }
 
 /* ===================== 時計 ===================== */
@@ -806,8 +1005,18 @@ function updateClock(){
 updateClock();
 setInterval(updateClock, 30000);
 
-/* ===================== 初期表示 ===================== */
-render();
+/* ===================== 初期起動 ===================== */
+async function boot(){
+  await withLoading(async ()=>{
+    state.menu = await sbSelect("menu", "order=name.asc");
+    session = loadStoredSession();
+    if(session){
+      await loadSettings();
+      await loadMyOrdersForMonth(calendarYearMonth);
+    }
+  });
+}
+boot();
 </script>
 </body>
 </html>
