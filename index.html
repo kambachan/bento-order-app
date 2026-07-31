@@ -57,11 +57,18 @@
   .row-today td{background:#fff1e0;font-weight:bold;box-shadow:inset 0 2px 0 var(--main), inset 0 -2px 0 var(--main);}
   .row-today.row-holiday td{background:#e9e2da;}
   .today-badge{display:inline-block;background:var(--main);color:#fff;font-size:10px;font-weight:bold;padding:1px 6px;border-radius:10px;margin-left:6px;vertical-align:middle;}
+  .weekday-grid{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;}
+  .weekday-grid label{display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text);margin:0;width:auto;}
+  .weekday-grid input{width:auto;}
+  .receipt-table th,.receipt-table td{padding:2px 8px;font-size:12px;line-height:1.3;}
+  .receipt-table .checkbox-box{width:12px;height:12px;}
+  .receipt-table th.date-col,.receipt-table td.date-col{width:90px;}
   @media print{
     header, nav, .no-print{display:none !important;}
     body{background:#fff;}
     main{max-width:100%;padding:0;}
     .card{border:none;box-shadow:none;}
+    .receipt-table th,.receipt-table td{padding:1px 6px;font-size:11px;}
   }
 </style>
 </head>
@@ -142,6 +149,7 @@ let state = {
   menu: [],
   deadline: {daysBefore:0, time:"09:00"},
   blockedDates: [],
+  blockedWeekdays: [], // 発注不可の曜日（0:日 1:月 2:火 3:水 4:木 5:金 6:土）
   orders: {},     // キャッシュ: { "YYYY-MM-DD": { employeeId: menuId } }（ログイン中の本人の分のみ）
   employees: []   // 管理タブ「対象者リスト」を開いたときだけ取得
 };
@@ -193,6 +201,27 @@ async function loadSettings(){
   const s = await sbRpc("rpc_get_settings", {p_token: session.token});
   state.deadline = { daysBefore: s.deadline_days_before, time: s.deadline_time };
   state.blockedDates = s.blocked_dates || [];
+  state.blockedWeekdays = s.blocked_weekdays || [];
+}
+
+// 締切設定・発注不可日・発注不可曜日をまとめて保存する（overridesで指定した項目だけ変更する）
+async function saveSettingsPartial(overrides){
+  const payload = Object.assign({
+    daysBefore: state.deadline.daysBefore,
+    time: state.deadline.time,
+    blockedDates: state.blockedDates || [],
+    blockedWeekdays: state.blockedWeekdays || []
+  }, overrides || {});
+  const updated = await sbRpc("rpc_admin_update_settings", {
+    p_token: session.token,
+    p_days_before: payload.daysBefore,
+    p_time: payload.time,
+    p_blocked_dates: payload.blockedDates,
+    p_blocked_weekdays: payload.blockedWeekdays
+  });
+  state.deadline = { daysBefore: updated.deadline_days_before, time: updated.deadline_time };
+  state.blockedDates = updated.blocked_dates || [];
+  state.blockedWeekdays = updated.blocked_weekdays || [];
 }
 
 async function loadMyOrdersForMonth(yearMonth){
@@ -213,12 +242,16 @@ function isBlockedDate(dateStr){
   return (state.blockedDates||[]).includes(dateStr);
 }
 
+function isBlockedWeekday(dateStr){
+  return (state.blockedWeekdays||[]).includes(dayOfWeek(dateStr));
+}
+
 function holidayName(dateStr){
   return HOLIDAYS[dateStr] || null;
 }
 
 function isNonOrderableDay(dateStr){
-  return isBlockedDate(dateStr) || !!holidayName(dateStr);
+  return isBlockedDate(dateStr) || isBlockedWeekday(dateStr) || !!holidayName(dateStr);
 }
 
 function todayStr(){
@@ -378,7 +411,8 @@ function renderOrderTab(){
         ${dates.map(d=>{
           const holiday = holidayName(d);
           const blockedDate = isBlockedDate(d);
-          const nonOrderable = blockedDate || !!holiday;
+          const blockedWd = isBlockedWeekday(d);
+          const nonOrderable = blockedDate || blockedWd || !!holiday;
           const locked = isLocked(d);
           const existing = existingMenuFor(session.employeeId, d);
           const existingMenuName = existing ? (state.menu.find(m=>m.id===existing)?.name || "―") : null;
@@ -387,7 +421,7 @@ function renderOrderTab(){
           const todayMark = isToday ? ` <span class="today-badge">本日</span>` : "";
           const rowIdAttr = isToday ? ` id="rowToday"` : "";
           if(nonOrderable){
-            const label = holiday ? holiday : "発注不可日";
+            const label = holiday ? holiday : (blockedWd ? `${WEEKDAY_LABELS[dayOfWeek(d)]}曜休配` : "発注不可日");
             return `<tr class="row-holiday${todayCls}"${rowIdAttr}>
               <td>${fmtDateJP(d)}${todayMark}</td>
               <td><span style="color:var(--sub);">休（${label}）</span></td>
@@ -843,8 +877,11 @@ function renderMenuAdmin(container){
 }
 
 /* --- 締切設定 --- */
+const WEEKDAY_LABELS = ["日","月","火","水","木","金","土"];
+
 function renderDeadlineAdmin(container){
   const blocked = [...(state.blockedDates||[])].sort();
+  const blockedWd = state.blockedWeekdays||[];
   container.innerHTML = `
     <div class="card">
       <h2>発注締切ルール</h2>
@@ -854,6 +891,16 @@ function renderDeadlineAdmin(container){
       <input type="time" id="dlTime" value="${state.deadline.time}">
       <div class="hint">例: 「1日前 15:00」なら、8/5分の発注は8/4の15:00で締切</div>
       <button class="primary" id="saveDlBtn">保存</button>
+    </div>
+    <div class="card">
+      <h2>発注不可の曜日</h2>
+      <div class="hint">チェックした曜日は毎週自動で発注不可（グレー表示）になります</div>
+      <div class="weekday-grid">
+        ${WEEKDAY_LABELS.map((label,idx)=>`
+          <label><input type="checkbox" class="wdCheckbox" data-wd="${idx}" ${blockedWd.includes(idx)?"checked":""}>${label}</label>
+        `).join("")}
+      </div>
+      <button class="primary" id="saveWdBtn">保存</button>
     </div>
     <div class="card">
       <h2>発注不可日</h2>
@@ -876,32 +923,25 @@ function renderDeadlineAdmin(container){
   container.querySelector("#saveDlBtn").onclick = ()=>{
     const days = Number(container.querySelector("#dlDays").value)||0;
     const time = container.querySelector("#dlTime").value || "15:00";
-    withLoading(async ()=>{
-      const updated = await sbRpc("rpc_admin_update_settings", {p_token: session.token, p_days_before: days, p_time: time, p_blocked_dates: state.blockedDates||[]});
-      state.deadline = { daysBefore: updated.deadline_days_before, time: updated.deadline_time };
-      state.blockedDates = updated.blocked_dates || [];
-    });
+    withLoading(()=> saveSettingsPartial({ daysBefore: days, time: time }));
+  };
+
+  container.querySelector("#saveWdBtn").onclick = ()=>{
+    const newWd = Array.from(container.querySelectorAll(".wdCheckbox:checked")).map(el=>Number(el.dataset.wd));
+    withLoading(()=> saveSettingsPartial({ blockedWeekdays: newWd }));
   };
 
   container.querySelector("#addBlockedDateBtn").onclick = ()=>{
     const val = container.querySelector("#newBlockedDate").value;
     if(!val) return;
     const newBlocked = Array.from(new Set([...(state.blockedDates||[]), val]));
-    withLoading(async ()=>{
-      const updated = await sbRpc("rpc_admin_update_settings", {p_token: session.token, p_days_before: state.deadline.daysBefore, p_time: state.deadline.time, p_blocked_dates: newBlocked});
-      state.deadline = { daysBefore: updated.deadline_days_before, time: updated.deadline_time };
-      state.blockedDates = updated.blocked_dates || [];
-    });
+    withLoading(()=> saveSettingsPartial({ blockedDates: newBlocked }));
   };
 
   container.querySelectorAll("[data-del-date]").forEach(btn=>{
     btn.onclick = ()=>{
       const newBlocked = (state.blockedDates||[]).filter(d=>d!==btn.dataset.delDate);
-      withLoading(async ()=>{
-        const updated = await sbRpc("rpc_admin_update_settings", {p_token: session.token, p_days_before: state.deadline.daysBefore, p_time: state.deadline.time, p_blocked_dates: newBlocked});
-        state.deadline = { daysBefore: updated.deadline_days_before, time: updated.deadline_time };
-        state.blockedDates = updated.blocked_dates || [];
-      });
+      withLoading(()=> saveSettingsPartial({ blockedDates: newBlocked }));
     };
   });
 }
@@ -974,14 +1014,13 @@ function renderReceiptAdmin(container){
     </div>
     <div class="card" id="printArea">
       <h2>受取確認リスト — ${fmtDateJP(receiptDate)}（発注者のみ / ${rows.length}名）</h2>
-      <table>
-        <tr><th class="checkbox-col">受取</th><th>氏名</th><th>部署</th><th>メニュー</th></tr>
+      <table class="receipt-table">
+        <tr><th class="date-col">日付</th><th>氏名</th><th class="checkbox-col">✓</th></tr>
         ${rows.map(r=>`
           <tr>
-            <td class="checkbox-col"><span class="checkbox-box"></span></td>
+            <td class="date-col">${fmtDateJP(receiptDate)}</td>
             <td>${r.name}</td>
-            <td>${r.dept}</td>
-            <td>${r.menu_name}</td>
+            <td class="checkbox-col"><span class="checkbox-box"></span></td>
           </tr>`).join("")}
       </table>
     </div>
