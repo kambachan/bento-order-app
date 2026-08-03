@@ -1251,7 +1251,7 @@ function renderReceiptAdmin(container){
       </select>
     </div>
     <div class="card" id="printArea">
-      <h2>受取確認リスト — ${fmtDateJP(receiptDate)}${filterMenuName ? `（${filterMenuName}）` : ""}（発注者のみ / ${totalCount}名）</h2>
+      <h2>${filterMenuName ? `${filterMenuName}　` : ""}${fmtDateJP(receiptDate)}</h2>
       <table class="receipt-table">
         <tr><th class="date-col">日付</th><th>氏名</th><th class="checkbox-col">✓</th></tr>
         ${groups.map(g=>`
