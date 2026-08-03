@@ -64,6 +64,14 @@
   .receipt-table .checkbox-box{width:12px;height:12px;}
   .receipt-table th.date-col,.receipt-table td.date-col{width:90px;}
   .receipt-table .dept-group-row td{background:#fff1e0;color:var(--main-dark);font-weight:bold;font-size:12px;padding:3px 8px;}
+  #faxSheetHolder{display:none;}
+  .fax-sheet{width:100%;padding:20px;font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;}
+  .fax-sheet h1{font-size:28px;text-align:center;border-bottom:3px solid #333;padding-bottom:14px;margin:0 0 26px;letter-spacing:4px;}
+  .fax-sheet .fax-menu-name{font-size:22px;font-weight:bold;text-align:center;margin:0 0 30px;padding:14px;border:2px solid #333;}
+  .fax-info-table{width:100%;border-collapse:collapse;font-size:16px;}
+  .fax-info-table th{width:150px;text-align:left;background:#f5f5f5;padding:12px 14px;border:1px solid #999;}
+  .fax-info-table td{padding:12px 14px;border:1px solid #999;}
+  @page{ size: A4; margin: 18mm; }
   @media print{
     header, nav, .no-print{display:none !important;}
     body{background:#fff;}
@@ -71,6 +79,8 @@
     .card{border:none;box-shadow:none;}
     .receipt-table th,.receipt-table td{padding:1px 6px;font-size:11px;}
     .receipt-table .dept-group-row td{padding:2px 6px;}
+    body.printing-fax > *:not(#faxSheetHolder){display:none !important;}
+    body.printing-fax #faxSheetHolder{display:block;}
   }
 </style>
 </head>
@@ -139,7 +149,23 @@ function friendlyError(e){
 }
 
 function mapEmployee(row){
-  return { id: row.id, code: row.code, name: row.name, dept: row.dept, isAdmin: row.is_admin, orgCode: row.org_code || "" };
+  return { id: row.id, code: row.code, name: row.name, dept: row.dept, isAdmin: row.is_admin, orgCode: row.org_code || "", isExecutive: !!row.is_executive };
+}
+
+// 発注画面で使う公開メニュー情報（社員価格・役員価格のみ。FAX番号は含めない）
+function mapMenu(row){
+  return { id: row.id, name: row.name, priceEmployee: row.price_employee, priceExecutive: row.price_executive };
+}
+
+// メニュー管理画面（管理者専用）で使う、FAX番号を含む完全なメニュー情報
+function mapMenuAdmin(row){
+  return { id: row.id, name: row.name, priceEmployee: row.price_employee, priceExecutive: row.price_executive, faxNumber: row.fax_number || "" };
+}
+
+// ログイン中の本人の役割（役員/社員）に応じた、指定メニューの単価を返す
+function priceForMenu(menu){
+  if(!menu) return 0;
+  return (session && session.isExecutive) ? (menu.priceExecutive||0) : (menu.priceEmployee||0);
 }
 
 /* ===================== 祝日データ（2024年〜2032年、事前計算・振替休日/国民の休日を含む） ===================== */
@@ -153,11 +179,12 @@ let state = {
   blockedDates: [],
   blockedWeekdays: [], // 発注不可の曜日（0:日 1:月 2:火 3:水 4:木 5:金 6:土）
   orders: {},     // キャッシュ: { "YYYY-MM-DD": { employeeId: menuId } }（ログイン中の本人の分のみ）
-  employees: []   // 管理タブ「対象者リスト」を開いたときだけ取得
+  employees: [],  // 管理タブ「対象者リスト」を開いたときだけ取得
+  adminMenu: []   // 管理タブ「メニュー管理」用（FAX番号を含む。発注画面のstate.menuとは別に保持）
 };
 
 const SESSION_STORAGE_KEY = "bentoAppSession_v1";
-let session = null; // { token, employeeId, name, dept, isAdmin, code }
+let session = null; // { token, employeeId, name, dept, isAdmin, isExecutive, code }
 
 function loadStoredSession(){
   try{
@@ -179,7 +206,7 @@ async function loginWithCode(code){
     return false;
   }
   const r = rows[0];
-  session = { token: r.session_token, employeeId: r.employee_id, name: r.name, dept: r.dept, isAdmin: r.is_admin, code: trimmed };
+  session = { token: r.session_token, employeeId: r.employee_id, name: r.name, dept: r.dept, isAdmin: r.is_admin, isExecutive: !!r.is_executive, code: trimmed };
   persistSession();
   loginError = "";
   return true;
@@ -196,7 +223,7 @@ async function logout(){
 }
 
 async function loadMenu(){
-  state.menu = await sbSelect("menu", "order=name.asc");
+  state.menu = (await sbSelect("menu", "order=name.asc")).map(mapMenu);
 }
 
 async function loadSettings(){
@@ -226,9 +253,11 @@ async function saveSettingsPartial(overrides){
   state.blockedWeekdays = updated.blocked_weekdays || [];
 }
 
-async function loadMyOrdersForMonth(yearMonth){
-  const rows = await sbRpc("rpc_get_my_orders", {p_token: session.token, p_year_month: yearMonth});
-  daysInMonth(yearMonth).forEach(d=>{ if(state.orders[d]) delete state.orders[d][session.employeeId]; });
+// 発注月度（16日始まり15日締め）に対応した本人の発注情報を取得する
+async function loadMyOrdersForMonth(periodYm){
+  const {start, end} = periodRange(periodYm);
+  const rows = await sbRpc("rpc_get_my_orders_range", {p_token: session.token, p_start_date: start, p_end_date: end});
+  datesInPeriod(periodYm).forEach(d=>{ if(state.orders[d]) delete state.orders[d][session.employeeId]; });
   rows.forEach(r=>{
     if(!state.orders[r.date]) state.orders[r.date] = {};
     state.orders[r.date][session.employeeId] = r.menu_id;
@@ -297,6 +326,43 @@ function daysInMonth(ym){
   const [y,m] = ym.split("-").map(Number);
   const last = new Date(y, m, 0).getDate();
   return Array.from({length:last}, (_,i)=> `${y}-${String(m).padStart(2,"0")}-${String(i+1).padStart(2,"0")}`);
+}
+
+// 発注月度: "YYYY-MM"（例: "2026-08" = 8月度）は「前月16日〜当月15日」を表す
+function periodRange(ym){
+  let [y,m] = ym.split("-").map(Number);
+  let sy = y, sm = m - 1;
+  if(sm < 1){ sm = 12; sy--; }
+  const start = `${sy}-${String(sm).padStart(2,"0")}-16`;
+  const end = `${y}-${String(m).padStart(2,"0")}-15`;
+  return { start, end };
+}
+
+function datesInRange(startStr, endStr){
+  const dates = [];
+  let cur = new Date(startStr+"T00:00:00");
+  const end = new Date(endStr+"T00:00:00");
+  while(cur <= end){
+    dates.push(`${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}-${String(cur.getDate()).padStart(2,"0")}`);
+    cur.setDate(cur.getDate()+1);
+  }
+  return dates;
+}
+
+function datesInPeriod(ym){
+  const {start, end} = periodRange(ym);
+  return datesInRange(start, end);
+}
+
+// 指定日が属する発注月度のラベル（"YYYY-MM"）を返す（16日以降ならその月の翌月扱い）
+function periodLabelFor(dateStr){
+  const d = new Date(dateStr+"T00:00:00");
+  let y = d.getFullYear(), m = d.getMonth()+1;
+  if(d.getDate() >= 16){
+    m += 1;
+    if(m > 12){ m = 1; y++; }
+  }
+  return `${y}-${String(m).padStart(2,"0")}`;
 }
 
 function existingMenuFor(empId, dateStr){
@@ -369,7 +435,7 @@ function render(){
 
 /* ===================== 発注タブ（社員向け） ===================== */
 let loginError = "";
-let calendarYearMonth = todayStr().slice(0,7); // "YYYY-MM"
+let calendarYearMonth = periodLabelFor(todayStr()); // "YYYY-MM"（16日始まり15日締めの発注月度）
 let batchMessage = "";
 
 function renderOrderTab(){
@@ -378,37 +444,47 @@ function renderOrderTab(){
     return;
   }
 
-  const dates = daysInMonth(calendarYearMonth);
+  const dates = datesInPeriod(calendarYearMonth);
+  const {start: periodStart, end: periodEnd} = periodRange(calendarYearMonth);
   const [ymYear, ymMonth] = calendarYearMonth.split("-");
+  const roleLabel = session.isExecutive ? "役員" : "社員";
+
+  const orderedDates = dates.filter(d=> existingMenuFor(session.employeeId, d));
+  const monthlyTotalAmount = orderedDates.reduce((sum, d)=>{
+    const menuId = existingMenuFor(session.employeeId, d);
+    const m = state.menu.find(x=>x.id===menuId);
+    return sum + priceForMenu(m);
+  }, 0);
 
   app.innerHTML = `
     <div class="card">
       <div class="row" style="align-items:center;">
         <div>
           <div class="hint" style="margin:0;">ログイン中</div>
-          <div style="font-size:16px;font-weight:bold;">${session.name}（${session.dept} / 社員CD: ${session.code||"―"}）</div>
+          <div style="font-size:16px;font-weight:bold;">${session.name}（${session.dept} / 社員CD: ${session.code||"―"} / ${roleLabel}）</div>
         </div>
         <button class="secondary" id="logoutBtn" style="flex:0 0 auto;">ログアウト（別の人が使う）</button>
       </div>
     </div>
 
     <div class="card no-print">
-      <h2>対象月</h2>
+      <h2>対象月度</h2>
       <div class="row" style="align-items:center;">
-        <button class="secondary" id="prevMonthBtn" style="flex:0 0 auto;">← 前月</button>
+        <button class="secondary" id="prevMonthBtn" style="flex:0 0 auto;">← 前月度</button>
         <input type="month" id="monthSelect" value="${calendarYearMonth}">
-        <button class="secondary" id="nextMonthBtn" style="flex:0 0 auto;">次月 →</button>
+        <button class="secondary" id="nextMonthBtn" style="flex:0 0 auto;">次月度 →</button>
       </div>
+      <div class="hint">発注月度は毎月16日始まり・翌月15日締め（例: ${Number(ymMonth)}月度 = ${fmtDateJP(periodStart)}〜${fmtDateJP(periodEnd)}）</div>
       <div class="hint">締切ルール: 対象日の${state.deadline.daysBefore}日前 ${state.deadline.time} まで</div>
     </div>
 
     <div class="card">
-      <h2>${ymYear}年${Number(ymMonth)}月 一括発注</h2>
+      <h2>${ymYear}年${Number(ymMonth)}月度（${fmtDateJP(periodStart)}〜${fmtDateJP(periodEnd)}） 一括発注</h2>
       <div class="table-scroll">
       <table>
         <tr>
           <th>日付</th><th>状態</th>
-          ${state.menu.map(m=>`<th>${m.name}<br><span class="hint" style="margin:0;">¥${m.price}</span></th>`).join("")}
+          ${state.menu.map(m=>`<th>${m.name}<br><span class="hint" style="margin:0;">¥${priceForMenu(m)}</span></th>`).join("")}
         </tr>
         ${dates.map(d=>{
           const holiday = holidayName(d);
@@ -454,8 +530,8 @@ function renderOrderTab(){
     </div>
 
     <div class="card">
-      <h2>${ymYear}年${Number(ymMonth)}月の発注回数</h2>
-      <div class="status-box status-ok">今月は ${dates.filter(d=>existingMenuFor(session.employeeId, d)).length} 回発注しています</div>
+      <h2>${ymYear}年${Number(ymMonth)}月度の発注回数・金額</h2>
+      <div class="status-box status-ok">${Number(ymMonth)}月度は ${orderedDates.length} 回発注しています（発注金額累計: ¥${monthlyTotalAmount.toLocaleString()}）</div>
     </div>
   `;
 
@@ -478,8 +554,8 @@ function renderOrderTab(){
     withLoading(()=> loadMyOrdersForMonth(calendarYearMonth));
   };
 
-  // 今月を表示している場合、本日の行が見える位置まで自動スクロール
-  if(calendarYearMonth === todayStr().slice(0,7)){
+  // 今の発注月度を表示している場合、本日の行が見える位置まで自動スクロール
+  if(calendarYearMonth === periodLabelFor(todayStr())){
     const todayRow = document.getElementById("rowToday");
     if(todayRow && todayRow.scrollIntoView){
       todayRow.scrollIntoView({block:"center"});
@@ -535,7 +611,7 @@ function renderLoginScreen(){
 // チェックボックスが消えてしまい、変更点を検出できなくなるため）。
 function collectOrderChanges(){
   const changes = [];
-  daysInMonth(calendarYearMonth).forEach(d=>{
+  datesInPeriod(calendarYearMonth).forEach(d=>{
     if(isLocked(d) || isNonOrderableDay(d)) return; // 念のため締切済み・発注不可日は無視
     const checked = document.querySelector(`.calCheckbox[data-date="${d}"]:checked`);
     const menuId = checked ? checked.dataset.menu : null;
@@ -582,12 +658,15 @@ async function loadAdminSubData(sub){
   if(sub === "employees"){
     const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
     state.employees = rows.map(mapEmployee);
+  } else if(sub === "menu"){
+    const rows = await sbRpc("rpc_admin_list_menu", {p_token: session.token});
+    state.adminMenu = rows.map(mapMenuAdmin);
   } else if(sub === "summary"){
     summaryRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: summaryDate});
   } else if(sub === "receipt"){
     receiptRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: receiptDate});
   }
-  // menu / deadline サブタブは既にグローバルで読み込み済みの state.menu / state.deadline / state.blockedDates を使う
+  // deadline / monthly サブタブは既にグローバルで読み込み済みのデータ、または操作時に都度取得するデータを使う
 }
 
 function renderAdminAccessScreen(){
@@ -655,6 +734,7 @@ function renderAdminTab(){
       <button data-sub="deadline">締切設定</button>
       <button data-sub="summary">発注集計・発注書</button>
       <button data-sub="receipt">受取確認リスト</button>
+      <button data-sub="monthly">月次集計</button>
     </div>
     <div id="adminContent"></div>
   `;
@@ -674,6 +754,7 @@ function renderAdminTab(){
   else if(currentAdminSub==="deadline") renderDeadlineAdmin(content);
   else if(currentAdminSub==="summary") renderSummaryAdmin(content);
   else if(currentAdminSub==="receipt") renderReceiptAdmin(content);
+  else if(currentAdminSub==="monthly") renderMonthlyAdmin(content);
 }
 
 /* --- 対象者リスト管理 --- */
@@ -700,13 +781,16 @@ function renderEmployeesAdmin(container){
         <label style="display:flex;align-items:center;gap:4px;flex:0 0 auto;min-width:auto;margin:0;">
           <input type="checkbox" id="newEmpIsAdmin"> 管理者
         </label>
+        <label style="display:flex;align-items:center;gap:4px;flex:0 0 auto;min-width:auto;margin:0;">
+          <input type="checkbox" id="newEmpIsExecutive"> 役員
+        </label>
         <button class="secondary" id="addEmpBtn" style="flex:0 0 auto;">追加</button>
       </div>
-      <div class="hint">社員CDは発注画面・管理タブ共通のログインIDです。重複しない値を設定してください。「管理者」にチェックすると、その社員CDで管理タブにログインできるようになります。組織コードは受取確認リストの所属グループ表示・一覧の並び順に使用します。</div>
+      <div class="hint">社員CDは発注画面・管理タブ共通のログインIDです。重複しない値を設定してください。「管理者」にチェックすると、その社員CDで管理タブにログインできるようになります。組織コードは受取確認リストの所属グループ表示・一覧の並び順に使用します。「役員」にチェックすると、発注画面・集計で役員価格が適用されます（チェックなしは社員価格）。</div>
     </div>
     <div class="card">
       <h2>CSV一括取込・出力</h2>
-      <div class="hint">CSV形式: 社員CD,氏名,部署,組織コード（1行目はヘッダーでも可）。CSV取込では管理者権限は付与されません（一覧から個別に設定してください）。</div>
+      <div class="hint">CSV形式: 社員CD,氏名,部署,組織コード,役員フラグ（1/0。1行目はヘッダーでも可）。CSV取込では管理者権限は付与されません（一覧から個別に設定してください）。</div>
       <input type="file" id="csvInput" accept=".csv" style="margin-top:8px;">
       <div class="row" style="margin-top:10px;">
         <button class="secondary" id="csvExportBtn">CSVで出力</button>
@@ -719,7 +803,7 @@ function renderEmployeesAdmin(container){
         <tr>
           <th>社員CD</th><th>氏名</th><th>部署</th>
           <th id="orgCodeSortHeader" style="cursor:pointer;white-space:nowrap;">組織コード ${empSortAsc ? "▲" : "▼"}</th>
-          <th>管理者</th><th class="no-print">操作</th>
+          <th>管理者</th><th>役員</th><th class="no-print">操作</th>
         </tr>
         ${list.map(e=>`
           <tr>
@@ -728,6 +812,7 @@ function renderEmployeesAdmin(container){
             <td><input type="text" data-field="dept" data-id="${e.id}" value="${e.dept}"></td>
             <td><input type="text" data-field="orgCode" data-id="${e.id}" value="${e.orgCode||""}"></td>
             <td style="text-align:center;"><input type="checkbox" class="adminCheckbox" data-id="${e.id}" ${e.isAdmin?"checked":""}></td>
+            <td style="text-align:center;"><input type="checkbox" class="executiveCheckbox" data-id="${e.id}" ${e.isExecutive?"checked":""}></td>
             <td class="no-print"><button class="danger" data-del="${e.id}">削除</button></td>
           </tr>`).join("")}
       </table>
@@ -745,10 +830,11 @@ function renderEmployeesAdmin(container){
     const dept = container.querySelector("#newEmpDept").value.trim();
     const orgCode = container.querySelector("#newEmpOrgCode").value.trim();
     const isAdmin = container.querySelector("#newEmpIsAdmin").checked;
+    const isExecutive = container.querySelector("#newEmpIsExecutive").checked;
     if(!name || !code){ alert("社員CDと氏名は必須です"); return; }
     withLoading(async ()=>{
       try{
-        await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept, p_is_admin: isAdmin, p_org_code: orgCode});
+        await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept, p_is_admin: isAdmin, p_org_code: orgCode, p_is_executive: isExecutive});
         const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
         state.employees = rows.map(mapEmployee);
       }catch(e){ alert(friendlyError(e)); }
@@ -762,7 +848,7 @@ function renderEmployeesAdmin(container){
       const updated = Object.assign({}, emp, {[inp.dataset.field]: inp.value});
       withLoading(async ()=>{
         try{
-          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||""});
+          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||"", p_is_executive: updated.isExecutive});
           const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
           state.employees = rows.map(mapEmployee);
         }catch(e){ alert(friendlyError(e)); }
@@ -785,7 +871,22 @@ function renderEmployeesAdmin(container){
       const updated = Object.assign({}, emp, {isAdmin: cb.checked});
       withLoading(async ()=>{
         try{
-          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||""});
+          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||"", p_is_executive: updated.isExecutive});
+          const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
+          state.employees = rows.map(mapEmployee);
+        }catch(e){ alert(friendlyError(e)); }
+      });
+    };
+  });
+
+  container.querySelectorAll(".executiveCheckbox").forEach(cb=>{
+    cb.onchange = ()=>{
+      const emp = state.employees.find(x=>x.id===cb.dataset.id);
+      if(!emp) return;
+      const updated = Object.assign({}, emp, {isExecutive: cb.checked});
+      withLoading(async ()=>{
+        try{
+          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||"", p_is_executive: updated.isExecutive});
           const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
           state.employees = rows.map(mapEmployee);
         }catch(e){ alert(friendlyError(e)); }
@@ -817,10 +918,11 @@ function renderEmployeesAdmin(container){
         for(const line of lines){
           const parts = line.split(",").map(p=>p.trim());
           if(parts[0] === "社員CD" || parts[0] === "氏名" || parts[0] === "code") continue;
-          const [code, name, dept, orgCode] = parts;
+          const [code, name, dept, orgCode, execFlag] = parts;
           if(!code || !name) continue;
+          const isExecutive = execFlag === "1" || execFlag === "役員" || execFlag === "true";
           try{
-            await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept||"", p_is_admin: false, p_org_code: orgCode||""});
+            await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept||"", p_is_admin: false, p_org_code: orgCode||"", p_is_executive: isExecutive});
             added++;
           }catch(err){ skipped++; }
         }
@@ -833,30 +935,43 @@ function renderEmployeesAdmin(container){
   };
 
   container.querySelector("#csvExportBtn").onclick = ()=>{
-    const csv = "社員CD,氏名,部署,組織コード\n" + state.employees.map(e=>`${e.code||""},${e.name},${e.dept},${e.orgCode||""}`).join("\n");
+    const csv = "社員CD,氏名,部署,組織コード,役員フラグ\n" + state.employees.map(e=>`${e.code||""},${e.name},${e.dept},${e.orgCode||""},${e.isExecutive?"1":"0"}`).join("\n");
     downloadFile("対象者リスト.csv", csv);
   };
 }
 
 /* --- メニュー管理 --- */
+// メニュー管理画面での変更後、発注画面用（state.menu）と管理画面用（state.adminMenu）の両方を再取得する
+async function reloadMenuEverywhere(){
+  await loadMenu();
+  const rows = await sbRpc("rpc_admin_list_menu", {p_token: session.token});
+  state.adminMenu = rows.map(mapMenuAdmin);
+}
+
 function renderMenuAdmin(container){
+  const list = state.adminMenu || [];
   container.innerHTML = `
     <div class="card">
       <h2>弁当メニューを追加</h2>
       <div class="row">
         <input type="text" id="newMenuName" placeholder="メニュー名">
-        <input type="number" id="newMenuPrice" placeholder="価格">
+        <input type="number" id="newMenuPriceEmployee" placeholder="価格（社員）">
+        <input type="number" id="newMenuPriceExecutive" placeholder="価格（役員）">
+        <input type="text" id="newMenuFax" placeholder="発注先FAX番号">
         <button class="secondary" id="addMenuBtn" style="flex:0 0 auto;">追加</button>
       </div>
+      <div class="hint">「価格（社員）」「価格（役員）」はそれぞれ発注画面・集計に反映されます。「発注先FAX番号」は発注画面には表示されません（管理者のみが確認できます）。</div>
     </div>
     <div class="card">
       <h2>メニュー一覧</h2>
       <table>
-        <tr><th>メニュー名</th><th>価格</th><th class="no-print">操作</th></tr>
-        ${state.menu.map(m=>`
+        <tr><th>メニュー名</th><th>価格（社員）</th><th>価格（役員）</th><th>発注先FAX番号</th><th class="no-print">操作</th></tr>
+        ${list.map(m=>`
           <tr>
             <td><input type="text" data-field="name" data-id="${m.id}" value="${m.name}"></td>
-            <td><input type="number" data-field="price" data-id="${m.id}" value="${m.price}"></td>
+            <td><input type="number" data-field="priceEmployee" data-id="${m.id}" value="${m.priceEmployee}"></td>
+            <td><input type="number" data-field="priceExecutive" data-id="${m.id}" value="${m.priceExecutive}"></td>
+            <td><input type="text" data-field="faxNumber" data-id="${m.id}" value="${m.faxNumber||""}"></td>
             <td class="no-print"><button class="danger" data-del="${m.id}">削除</button></td>
           </tr>`).join("")}
       </table>
@@ -865,25 +980,28 @@ function renderMenuAdmin(container){
 
   container.querySelector("#addMenuBtn").onclick = ()=>{
     const name = container.querySelector("#newMenuName").value.trim();
-    const price = Number(container.querySelector("#newMenuPrice").value) || 0;
+    const priceEmployee = Number(container.querySelector("#newMenuPriceEmployee").value) || 0;
+    const priceExecutive = Number(container.querySelector("#newMenuPriceExecutive").value) || 0;
+    const faxNumber = container.querySelector("#newMenuFax").value.trim();
     if(!name) return;
     withLoading(async ()=>{
       try{
-        await sbRpc("rpc_admin_upsert_menu", {p_token: session.token, p_id: null, p_name: name, p_price: price});
-        state.menu = await sbSelect("menu", "order=name.asc");
+        await sbRpc("rpc_admin_upsert_menu", {p_token: session.token, p_id: null, p_name: name, p_price_employee: priceEmployee, p_price_executive: priceExecutive, p_fax_number: faxNumber});
+        await reloadMenuEverywhere();
       }catch(e){ alert(friendlyError(e)); }
     });
   };
 
   container.querySelectorAll("input[data-field]").forEach(inp=>{
     inp.onchange = ()=>{
-      const m = state.menu.find(x=>x.id===inp.dataset.id);
+      const m = list.find(x=>x.id===inp.dataset.id);
       if(!m) return;
-      const updated = Object.assign({}, m, {[inp.dataset.field]: inp.dataset.field==="price" ? Number(inp.value) : inp.value});
+      const isNumberField = inp.dataset.field==="priceEmployee" || inp.dataset.field==="priceExecutive";
+      const updated = Object.assign({}, m, {[inp.dataset.field]: isNumberField ? Number(inp.value) : inp.value});
       withLoading(async ()=>{
         try{
-          await sbRpc("rpc_admin_upsert_menu", {p_token: session.token, p_id: updated.id, p_name: updated.name, p_price: updated.price});
-          state.menu = await sbSelect("menu", "order=name.asc");
+          await sbRpc("rpc_admin_upsert_menu", {p_token: session.token, p_id: updated.id, p_name: updated.name, p_price_employee: updated.priceEmployee, p_price_executive: updated.priceExecutive, p_fax_number: updated.faxNumber||""});
+          await reloadMenuEverywhere();
         }catch(e){ alert(friendlyError(e)); }
       });
     };
@@ -895,7 +1013,7 @@ function renderMenuAdmin(container){
       withLoading(async ()=>{
         try{
           await sbRpc("rpc_admin_delete_menu", {p_token: session.token, p_id: btn.dataset.del});
-          state.menu = await sbSelect("menu", "order=name.asc");
+          await reloadMenuEverywhere();
         }catch(e){ alert(friendlyError(e)); }
       });
     };
@@ -976,10 +1094,58 @@ function renderDeadlineAdmin(container){
 let summaryDate = todayStr();
 let summaryRows = [];
 
+// FAX送付状に記載する送信元（自社）の固定情報
+const FAX_SENDER_INFO = {
+  company: "日清医療食品株式会社",
+  dept: "人事部労務課",
+  contact: "谷口",
+  tel: "03-3287-3618",
+  fax: "03-3287-3614"
+};
+
+// 指定メニューのFAX送付状（A4縦）だけを印刷する。他の画面内容は印刷時に非表示にする。
+function printFaxSheet(menuId, dateStr, rowsForDate){
+  const menu = (state.menu||[]).find(m=>m.id===menuId) || (state.adminMenu||[]).find(m=>m.id===menuId);
+  if(!menu){ alert("メニューを選択してください"); return; }
+  const qty = rowsForDate.filter(r=>r.menu_id===menuId).length;
+  const html = `
+    <div class="fax-sheet">
+      <h1>FAX送付状</h1>
+      <div class="fax-menu-name">${menu.name}</div>
+      <table class="fax-info-table">
+        <tr><th>会社名</th><td>${FAX_SENDER_INFO.company}</td></tr>
+        <tr><th>部署名</th><td>${FAX_SENDER_INFO.dept}</td></tr>
+        <tr><th>担当者</th><td>${FAX_SENDER_INFO.contact}</td></tr>
+        <tr><th>電話番号</th><td>${FAX_SENDER_INFO.tel}</td></tr>
+        <tr><th>FAX番号</th><td>${FAX_SENDER_INFO.fax}</td></tr>
+        <tr><th>注文日</th><td>${fmtDateJP(dateStr)}</td></tr>
+        <tr><th>注文数量</th><td>${qty} 個</td></tr>
+      </table>
+    </div>`;
+  let holder = document.getElementById("faxSheetHolder");
+  if(!holder){
+    holder = document.createElement("div");
+    holder.id = "faxSheetHolder";
+    document.body.appendChild(holder);
+  }
+  holder.innerHTML = html;
+  document.body.classList.add("printing-fax");
+  window.print();
+  const cleanup = ()=>{
+    document.body.classList.remove("printing-fax");
+    holder.innerHTML = "";
+    window.removeEventListener("afterprint", cleanup);
+  };
+  window.addEventListener("afterprint", cleanup);
+}
+
 function renderSummaryAdmin(container){
   const rows = summaryRows;
-  const countsByMenu = {};
-  rows.forEach(r=>{ countsByMenu[r.menu_id] = (countsByMenu[r.menu_id]||0) + 1; });
+  const empCountByMenu = {}, execCountByMenu = {};
+  rows.forEach(r=>{
+    if(r.is_executive) execCountByMenu[r.menu_id] = (execCountByMenu[r.menu_id]||0) + 1;
+    else empCountByMenu[r.menu_id] = (empCountByMenu[r.menu_id]||0) + 1;
+  });
 
   container.innerHTML = `
     <div class="card no-print">
@@ -989,29 +1155,45 @@ function renderSummaryAdmin(container){
     <div class="card" id="printArea">
       <h2>発注集計（業者発注書）— ${fmtDateJP(summaryDate)}</h2>
       <table>
-        <tr><th>メニュー</th><th>数量</th><th>単価</th><th>小計</th></tr>
-        ${state.menu.map(m=>`
+        <tr><th>メニュー</th><th>社員数量</th><th>役員数量</th><th>合計数量</th><th>小計</th></tr>
+        ${state.menu.map(m=>{
+          const empCount = empCountByMenu[m.id]||0, execCount = execCountByMenu[m.id]||0;
+          const subtotal = empCount*(m.priceEmployee||0) + execCount*(m.priceExecutive||0);
+          return `
           <tr>
             <td>${m.name}</td>
-            <td>${countsByMenu[m.id]||0}</td>
-            <td>¥${m.price}</td>
-            <td>¥${(countsByMenu[m.id]||0)*m.price}</td>
-          </tr>`).join("")}
+            <td>${empCount}</td>
+            <td>${execCount}</td>
+            <td>${empCount+execCount}</td>
+            <td>¥${subtotal.toLocaleString()}</td>
+          </tr>`;
+        }).join("")}
         <tr class="total-row">
           <td>合計</td>
+          <td>${rows.filter(r=>!r.is_executive).length}</td>
+          <td>${rows.filter(r=>r.is_executive).length}</td>
           <td>${rows.length}</td>
-          <td></td>
-          <td>¥${rows.reduce((s,r)=>s + (r.price||0),0)}</td>
+          <td>¥${rows.reduce((s,r)=>s + (r.price||0),0).toLocaleString()}</td>
         </tr>
       </table>
       <h2 style="margin-top:20px;">発注者一覧</h2>
       <table>
-        <tr><th>氏名</th><th>部署</th><th>メニュー</th></tr>
-        ${rows.map(r=>`<tr><td>${r.name}</td><td>${r.dept}</td><td>${r.menu_name}</td></tr>`).join("")}
+        <tr><th>氏名</th><th>部署</th><th>メニュー</th><th>区分</th></tr>
+        ${rows.map(r=>`<tr><td>${r.name}</td><td>${r.dept}</td><td>${r.menu_name}</td><td>${r.is_executive?"役員":"社員"}</td></tr>`).join("")}
       </table>
     </div>
+    <div class="card no-print">
+      <h2>FAX送付状</h2>
+      <div class="hint">「印刷」を押すと、送付するメニューを選んだうえでFAX送付状（会社名・部署名・担当者・電話番号・FAX番号・注文日・注文数量を記載したA4縦1枚）のみを印刷できます。</div>
+      <div class="row" style="margin-top:8px;">
+        <select id="faxMenuSelect">
+          ${state.menu.map(m=>`<option value="${m.id}">${m.name}（${(empCountByMenu[m.id]||0)+(execCountByMenu[m.id]||0)}個）</option>`).join("")}
+        </select>
+        <button class="primary" id="printFaxBtn" style="flex:0 0 auto;">印刷</button>
+      </div>
+    </div>
     <div class="no-print" style="margin-top:10px;">
-      <button class="secondary" id="printSummaryBtn">印刷</button>
+      <button class="secondary" id="printSummaryBtn">業者発注書を印刷</button>
       <button class="secondary" id="csvSummaryBtn">CSV出力</button>
     </div>
   `;
@@ -1019,9 +1201,13 @@ function renderSummaryAdmin(container){
     summaryDate = e.target.value;
     withLoading(async ()=>{ summaryRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: summaryDate}); });
   };
+  container.querySelector("#printFaxBtn").onclick = ()=>{
+    const menuId = container.querySelector("#faxMenuSelect").value;
+    printFaxSheet(menuId, summaryDate, rows);
+  };
   container.querySelector("#printSummaryBtn").onclick = ()=> window.print();
   container.querySelector("#csvSummaryBtn").onclick = ()=>{
-    let csv = "氏名,部署,メニュー\n" + rows.map(r=>`${r.name},${r.dept},${r.menu_name}`).join("\n");
+    let csv = "氏名,部署,メニュー,区分\n" + rows.map(r=>`${r.name},${r.dept},${r.menu_name},${r.is_executive?"役員":"社員"}`).join("\n");
     downloadFile(`発注一覧_${summaryDate}.csv`, csv);
   };
 }
@@ -1029,6 +1215,7 @@ function renderSummaryAdmin(container){
 /* --- 受取確認リスト --- */
 let receiptDate = todayStr();
 let receiptRows = [];
+let receiptMenuFilter = ""; // ""なら全メニュー対象。メニューIDを指定するとそのメニューのみに絞り込む
 
 // 受取確認リストを所属（部署）ごとにグループ化し、各グループを組織コード昇順で並べる
 function groupReceiptRowsByDept(rows){
@@ -1048,16 +1235,23 @@ function groupReceiptRowsByDept(rows){
 }
 
 function renderReceiptAdmin(container){
-  const groups = groupReceiptRowsByDept(receiptRows);
-  const totalCount = receiptRows.length;
+  const filteredRows = receiptMenuFilter ? receiptRows.filter(r=>r.menu_id===receiptMenuFilter) : receiptRows;
+  const groups = groupReceiptRowsByDept(filteredRows);
+  const totalCount = filteredRows.length;
+  const filterMenuName = receiptMenuFilter ? (state.menu.find(m=>m.id===receiptMenuFilter)?.name || "") : "";
 
   container.innerHTML = `
     <div class="card no-print">
-      <h2>対象日</h2>
+      <h2>対象日・メニュー</h2>
       <input type="date" id="receiptDateInput" value="${receiptDate}">
+      <label>メニューで絞り込み</label>
+      <select id="receiptMenuSelect">
+        <option value="">すべてのメニュー</option>
+        ${state.menu.map(m=>`<option value="${m.id}" ${receiptMenuFilter===m.id?"selected":""}>${m.name}</option>`).join("")}
+      </select>
     </div>
     <div class="card" id="printArea">
-      <h2>受取確認リスト — ${fmtDateJP(receiptDate)}（発注者のみ / ${totalCount}名）</h2>
+      <h2>受取確認リスト — ${fmtDateJP(receiptDate)}${filterMenuName ? `（${filterMenuName}）` : ""}（発注者のみ / ${totalCount}名）</h2>
       <table class="receipt-table">
         <tr><th class="date-col">日付</th><th>氏名</th><th class="checkbox-col">✓</th></tr>
         ${groups.map(g=>`
@@ -1079,7 +1273,69 @@ function renderReceiptAdmin(container){
     receiptDate = e.target.value;
     withLoading(async ()=>{ receiptRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: receiptDate}); });
   };
+  container.querySelector("#receiptMenuSelect").onchange = (e)=>{
+    receiptMenuFilter = e.target.value;
+    renderReceiptAdmin(container);
+  };
   container.querySelector("#printReceiptBtn").onclick = ()=> window.print();
+}
+
+/* --- 月次集計（16日〜15日の発注月度でCSV出力） --- */
+let monthlyYm = periodLabelFor(todayStr());
+let monthlyRows = []; // 集計後: [{code, name, amount}]
+
+// 期間内の生の発注データ（社員別・個人単価反映済み）を社員ごとに合算する
+function aggregateOrdersByEmployee(rawRows){
+  const map = new Map();
+  rawRows.forEach(r=>{
+    if(!map.has(r.employee_id)) map.set(r.employee_id, {code: r.code, name: r.name, amount: 0});
+    map.get(r.employee_id).amount += (r.price||0);
+  });
+  return [...map.values()].sort((a,b)=> (a.code||"").localeCompare(b.code||"", "ja", {numeric:true}));
+}
+
+function renderMonthlyAdmin(container){
+  const {start, end} = periodRange(monthlyYm);
+  const [, m] = monthlyYm.split("-");
+
+  container.innerHTML = `
+    <div class="card no-print">
+      <h2>集計する月度</h2>
+      <input type="month" id="monthlyYmInput" value="${monthlyYm}">
+      <div class="hint">${Number(m)}月度 ＝ ${fmtDateJP(start)}〜${fmtDateJP(end)}（16日始まり15日締め）</div>
+      <button class="primary" id="monthlyRunBtn">集計する</button>
+    </div>
+    <div class="card">
+      <h2>${Number(m)}月度 発注金額集計（${fmtDateJP(start)}〜${fmtDateJP(end)}）</h2>
+      <table>
+        <tr><th>社員CD</th><th>氏名</th><th>発注金額</th></tr>
+        ${monthlyRows.length
+          ? monthlyRows.map(r=>`<tr><td>${r.code||""}</td><td>${r.name}</td><td>¥${r.amount.toLocaleString()}</td></tr>`).join("")
+          : `<tr><td colspan="3" class="hint">「集計する」を押してください</td></tr>`}
+        ${monthlyRows.length ? `<tr class="total-row"><td colspan="2">合計</td><td>¥${monthlyRows.reduce((s,r)=>s+r.amount,0).toLocaleString()}</td></tr>` : ""}
+      </table>
+    </div>
+    <div class="no-print" style="margin-top:10px;">
+      <button class="secondary" id="csvMonthlyBtn" ${monthlyRows.length ? "" : "disabled"}>CSV出力</button>
+    </div>
+  `;
+  container.querySelector("#monthlyYmInput").onchange = (e)=>{
+    if(e.target.value) monthlyYm = e.target.value;
+    monthlyRows = [];
+    renderMonthlyAdmin(container);
+  };
+  container.querySelector("#monthlyRunBtn").onclick = ()=>{
+    withLoading(async ()=>{
+      const range = periodRange(monthlyYm);
+      const raw = await sbRpc("rpc_admin_orders_in_range", {p_token: session.token, p_start_date: range.start, p_end_date: range.end});
+      monthlyRows = aggregateOrdersByEmployee(raw);
+    });
+  };
+  container.querySelector("#csvMonthlyBtn").onclick = ()=>{
+    if(!monthlyRows.length) return;
+    const csv = "社員CD,氏名,発注金額\n" + monthlyRows.map(r=>`${r.code||""},${r.name},${r.amount}`).join("\n");
+    downloadFile(`月次発注金額集計_${monthlyYm}.csv`, csv);
+  };
 }
 
 /* ===================== 時計 ===================== */
@@ -1094,7 +1350,7 @@ setInterval(updateClock, 30000);
 /* ===================== 初期起動 ===================== */
 async function boot(){
   await withLoading(async ()=>{
-    state.menu = await sbSelect("menu", "order=name.asc");
+    await loadMenu();
     session = loadStoredSession();
     if(session){
       await loadSettings();
