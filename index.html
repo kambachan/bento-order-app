@@ -794,7 +794,7 @@ function renderAdminTab(){
       <button data-sub="summary">発注集計・発注書</button>
       <button data-sub="receipt">受取確認リスト</button>
       <button data-sub="monthly">月次集計</button>
-      <button data-sub="proxy">代理発注</button>
+      <button data-sub="proxy">代理発注・修正</button>
     </div>
     <div id="adminContent"></div>
   `;
@@ -1499,7 +1499,7 @@ function renderProxyAdmin(container){
 
   container.innerHTML = `
     <div class="card">
-      <h2>代理発注（管理者用）</h2>
+      <h2>代理発注・修正（管理者用）</h2>
       <div class="hint">管理者が対象者になりかわって発注内容を登録・修正できます。<strong>締切後でも修正可能です</strong>（土日・祝日・発注不可日は対象外のままです）。</div>
       <label>対象者</label>
       <select id="proxyEmpSelect">
