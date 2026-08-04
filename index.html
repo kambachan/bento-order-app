@@ -71,6 +71,16 @@
   .fax-info-table{width:100%;border-collapse:collapse;font-size:16px;}
   .fax-info-table th{width:150px;text-align:left;background:#f5f5f5;padding:12px 14px;border:1px solid #999;}
   .fax-info-table td{padding:12px 14px;border:1px solid #999;}
+  .blink-alert{
+    color:#c0392b;font-weight:bold;font-size:16px;margin-top:10px;
+    padding:10px 14px;border:2px solid #c0392b;border-radius:6px;background:#ffe3e3;
+    animation: blinkAlert 1s infinite;
+  }
+  @keyframes blinkAlert{
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  .monthly-table td, .monthly-table th{ white-space:nowrap; }
   @page{ size: A4; margin: 18mm; }
   @media print{
     header, nav, .no-print{display:none !important;}
@@ -1199,7 +1209,7 @@ function renderSummaryAdmin(container){
     <div class="card no-print">
       <h2>集計対象日</h2>
       <input type="date" id="summaryDateInput" value="${summaryDate}">
-      ${hasMultiQty ? `<div style="color:#c0392b;font-weight:bold;margin-top:10px;">複数個発注している方がいます</div>` : ""}
+      ${hasMultiQty ? `<div class="blink-alert">⚠ 複数個発注している方がいます</div>` : ""}
     </div>
     <div class="card" id="printArea">
       <h2>発注集計（業者発注書）— ${fmtDateJP(summaryDate)}</h2>
@@ -1377,7 +1387,7 @@ function renderMonthlyAdmin(container){
       <h2>${Number(m)}月度 発注金額集計（${fmtDateJP(start)}〜${fmtDateJP(end)}）</h2>
       <div class="hint">社員CD・氏名・月間発注金額に続けて、日付ごとの発注金額を横並びで表示します（発注がない日は空欄）。CSV出力も同じ形式です。</div>
       <div class="table-scroll">
-      <table>
+      <table class="monthly-table">
         <tr>
           <th>社員CD</th><th>氏名</th><th>月間発注金額</th>
           ${periodDates.map(d=>`<th>${fmtDateShort(d)}</th>`).join("")}
