@@ -1591,39 +1591,53 @@ function exportMonthlyCsv({ monthlyYm, monthlyGroups, deptTotals, menuTotals, gr
   downloadFile(`月次発注金額集計_${monthlyYm}.csv`, lines.join("\n"));
 }
 
-// 月次集計をA4横向き・表形式のExcelファイル(.xlsx)として出力する（社員別内訳＋部署別・メニュー別集計を1シートにまとめる）
+// 月次集計をA4縦向き・表形式のExcelファイル(.xlsx)として出力する
+// （社員別内訳は左右2列に分けて表示し、その下に部署別・メニュー別集計を1シートにまとめる）
 async function exportMonthlyExcel({ monthlyYm, monthlyGroups, deptTotals, menuTotals, grandTotal, grandTotalQty }){
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("月次集計", {
-    pageSetup: { paperSize: 9, orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: {left:0.5,right:0.5,top:0.5,bottom:0.5,header:0.2,footer:0.2} }
+    pageSetup: { paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: {left:0.5,right:0.5,top:0.5,bottom:0.5,header:0.2,footer:0.2} }
   });
 
   // 日本語がどの環境でも文字化け・表示崩れなく表示されるよう、全セル共通のフォントを明示的に指定する
   const JP_FONT = "游ゴシック";
-  const headerRow1 = ["社員CD","氏名","月間数量","月間発注金額"];
-  const styleHeaderRow = (row)=>{
-    row.eachCell(cell=>{
+  const styleHeaderRow = (row, skipCols)=>{
+    row.eachCell((cell, colNumber)=>{
+      if(skipCols && skipCols.has(colNumber)) return;
       cell.font = { name: JP_FONT, size: 11, bold:true };
       cell.alignment = { horizontal:"center", vertical:"middle" };
       cell.fill = { type:"pattern", pattern:"solid", fgColor:{argb:"FFEFEFEF"} };
       cell.border = { top:{style:"thin"}, left:{style:"thin"}, bottom:{style:"thin"}, right:{style:"thin"} };
     });
   };
-  const styleDataRow = (row, boldTotal)=>{
-    row.eachCell(cell=>{
+  const styleDataRow = (row, boldTotal, skipCols)=>{
+    row.eachCell((cell, colNumber)=>{
+      if(skipCols && skipCols.has(colNumber)) return;
       cell.font = { name: JP_FONT, size: 11, bold: !!boldTotal };
       cell.alignment = { vertical:"middle" };
       cell.border = { top:{style:"thin"}, left:{style:"thin"}, bottom:{style:"thin"}, right:{style:"thin"} };
     });
   };
 
-  const h1 = ws.addRow(headerRow1);
-  styleHeaderRow(h1);
+  // 社員別内訳を左右2列（列1-4 と 列6-9、列5は間隔用の空白列）に分けて表示する
+  const half = Math.ceil(monthlyGroups.length / 2);
+  const leftGroups = monthlyGroups.slice(0, half);
+  const rightGroups = monthlyGroups.slice(half);
 
-  monthlyGroups.forEach(g=>{
-    const row = ws.addRow([g.code||"", g.name, g.totalQty, g.total]);
-    styleDataRow(row, false);
-  });
+  const h1 = ws.addRow(["社員CD","氏名","月間数量","月間発注金額","","社員CD","氏名","月間数量","月間発注金額"]);
+  styleHeaderRow(h1, new Set([5]));
+
+  const empRowCount = Math.max(leftGroups.length, rightGroups.length);
+  for(let i=0;i<empRowCount;i++){
+    const l = leftGroups[i];
+    const r = rightGroups[i];
+    const row = ws.addRow([
+      l ? (l.code||"") : "", l ? l.name : "", l ? l.totalQty : "", l ? l.total : "",
+      "",
+      r ? (r.code||"") : "", r ? r.name : "", r ? r.totalQty : "", r ? r.total : ""
+    ]);
+    styleDataRow(row, false, new Set([5]));
+  }
 
   const totalRow = ws.addRow(["合計","", grandTotalQty, grandTotal]);
   ws.mergeCells(totalRow.number, 1, totalRow.number, 2);
@@ -1663,8 +1677,9 @@ async function exportMonthlyExcel({ monthlyYm, monthlyGroups, deptTotals, menuTo
   const menuTotalRow = ws.addRow(["合計", grandTotalQty, grandTotal]);
   styleDataRow(menuTotalRow, true);
 
-  // 金額列に通貨書式を設定
+  // 金額列に通貨書式を設定（社員別内訳は左右2列あるため、列4と列9の両方に設定）
   ws.getColumn(4).numFmt = "¥#,##0";
+  ws.getColumn(9).numFmt = "¥#,##0";
 
   // 列幅は固定値ではなく、実際に入っている文字（全角・半角）の見た目の幅から自動計算する。
   // これにより、氏名・集計用部署名・メニュー名が長い場合や、金額の桁数が多い場合でも
@@ -1696,6 +1711,8 @@ async function exportMonthlyExcel({ monthlyYm, monthlyGroups, deptTotals, menuTo
   Object.keys(colWidths).forEach(colNumber=>{
     ws.getColumn(Number(colNumber)).width = Math.min(Math.max(colWidths[colNumber] + 4, 10), 40);
   });
+  // 列5は社員別内訳の左右2列を区切るための空白列（常に狭い固定幅にする）
+  ws.getColumn(5).width = 3;
 
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
