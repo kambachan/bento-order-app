@@ -148,24 +148,31 @@ function friendlyError(e){
   return "エラーが発生しました: " + e.message;
 }
 
+// 対象者区分: "employee"(社員) / "executive"(役員) / "dispatch"(派遣)
+const EMPLOYEE_TYPE_LABELS = { employee: "社員", executive: "役員", dispatch: "派遣" };
+function employeeTypeLabel(t){ return EMPLOYEE_TYPE_LABELS[t] || "社員"; }
+
 function mapEmployee(row){
-  return { id: row.id, code: row.code, name: row.name, dept: row.dept, isAdmin: row.is_admin, orgCode: row.org_code || "", isExecutive: !!row.is_executive };
+  return { id: row.id, code: row.code, name: row.name, dept: row.dept, isAdmin: row.is_admin, orgCode: row.org_code || "", employeeType: row.employee_type || "employee" };
 }
 
-// 発注画面で使う公開メニュー情報（社員価格・役員価格のみ。FAX番号は含めない）
+// 発注画面で使う公開メニュー情報（社員・役員・派遣の3価格のみ。FAX番号は含めない）
 function mapMenu(row){
-  return { id: row.id, name: row.name, priceEmployee: row.price_employee, priceExecutive: row.price_executive };
+  return { id: row.id, name: row.name, priceEmployee: row.price_employee, priceExecutive: row.price_executive, priceDispatch: row.price_dispatch };
 }
 
 // メニュー管理画面（管理者専用）で使う、FAX番号を含む完全なメニュー情報
 function mapMenuAdmin(row){
-  return { id: row.id, name: row.name, priceEmployee: row.price_employee, priceExecutive: row.price_executive, faxNumber: row.fax_number || "" };
+  return { id: row.id, name: row.name, priceEmployee: row.price_employee, priceExecutive: row.price_executive, priceDispatch: row.price_dispatch, faxNumber: row.fax_number || "" };
 }
 
-// ログイン中の本人の役割（役員/社員）に応じた、指定メニューの単価を返す
+// ログイン中の本人の区分（社員/役員/派遣）に応じた、指定メニューの単価を返す
 function priceForMenu(menu){
   if(!menu) return 0;
-  return (session && session.isExecutive) ? (menu.priceExecutive||0) : (menu.priceEmployee||0);
+  const t = session && session.employeeType;
+  if(t === "executive") return menu.priceExecutive||0;
+  if(t === "dispatch") return menu.priceDispatch||0;
+  return menu.priceEmployee||0;
 }
 
 /* ===================== 祝日データ（2024年〜2032年、事前計算・振替休日/国民の休日を含む） ===================== */
@@ -184,7 +191,7 @@ let state = {
 };
 
 const SESSION_STORAGE_KEY = "bentoAppSession_v1";
-let session = null; // { token, employeeId, name, dept, isAdmin, isExecutive, code }
+let session = null; // { token, employeeId, name, dept, isAdmin, employeeType, code }
 
 function loadStoredSession(){
   try{
@@ -206,7 +213,7 @@ async function loginWithCode(code){
     return false;
   }
   const r = rows[0];
-  session = { token: r.session_token, employeeId: r.employee_id, name: r.name, dept: r.dept, isAdmin: r.is_admin, isExecutive: !!r.is_executive, code: trimmed };
+  session = { token: r.session_token, employeeId: r.employee_id, name: r.name, dept: r.dept, isAdmin: r.is_admin, employeeType: r.employee_type || "employee", code: trimmed };
   persistSession();
   loginError = "";
   return true;
@@ -254,13 +261,14 @@ async function saveSettingsPartial(overrides){
 }
 
 // 発注月度（16日始まり15日締め）に対応した本人の発注情報を取得する
+// state.orders[date][employeeId] は { menuId, qty } の形で保持する（qtyはまれな複数個発注に対応するため）
 async function loadMyOrdersForMonth(periodYm){
   const {start, end} = periodRange(periodYm);
   const rows = await sbRpc("rpc_get_my_orders_range", {p_token: session.token, p_start_date: start, p_end_date: end});
   datesInPeriod(periodYm).forEach(d=>{ if(state.orders[d]) delete state.orders[d][session.employeeId]; });
   rows.forEach(r=>{
     if(!state.orders[r.date]) state.orders[r.date] = {};
-    state.orders[r.date][session.employeeId] = r.menu_id;
+    state.orders[r.date][session.employeeId] = { menuId: r.menu_id, qty: r.qty || 1 };
   });
 }
 
@@ -366,7 +374,13 @@ function periodLabelFor(dateStr){
 }
 
 function existingMenuFor(empId, dateStr){
-  return (state.orders[dateStr] && state.orders[dateStr][empId]) || null;
+  const o = state.orders[dateStr] && state.orders[dateStr][empId];
+  return o ? o.menuId : null;
+}
+
+function existingQtyFor(empId, dateStr){
+  const o = state.orders[dateStr] && state.orders[dateStr][empId];
+  return o ? (o.qty || 1) : 1;
 }
 
 function downloadFile(filename, content){
@@ -447,13 +461,13 @@ function renderOrderTab(){
   const dates = datesInPeriod(calendarYearMonth);
   const {start: periodStart, end: periodEnd} = periodRange(calendarYearMonth);
   const [ymYear, ymMonth] = calendarYearMonth.split("-");
-  const roleLabel = session.isExecutive ? "役員" : "社員";
+  const roleLabel = employeeTypeLabel(session.employeeType);
 
   const orderedDates = dates.filter(d=> existingMenuFor(session.employeeId, d));
   const monthlyTotalAmount = orderedDates.reduce((sum, d)=>{
     const menuId = existingMenuFor(session.employeeId, d);
     const m = state.menu.find(x=>x.id===menuId);
-    return sum + priceForMenu(m);
+    return sum + priceForMenu(m) * existingQtyFor(session.employeeId, d);
   }, 0);
 
   app.innerHTML = `
@@ -485,6 +499,7 @@ function renderOrderTab(){
         <tr>
           <th>日付</th><th>状態</th>
           ${state.menu.map(m=>`<th>${m.name}<br><span class="hint" style="margin:0;">¥${priceForMenu(m)}</span></th>`).join("")}
+          <th>数量</th>
         </tr>
         ${dates.map(d=>{
           const holiday = holidayName(d);
@@ -493,7 +508,9 @@ function renderOrderTab(){
           const nonOrderable = blockedDate || blockedWd || !!holiday;
           const locked = isLocked(d);
           const existing = existingMenuFor(session.employeeId, d);
+          const existingQty = existingQtyFor(session.employeeId, d);
           const existingMenuName = existing ? (state.menu.find(m=>m.id===existing)?.name || "―") : null;
+          const existingLabel = existingMenuName ? (existingQty > 1 ? `${existingMenuName} ×${existingQty}` : existingMenuName) : null;
           const isToday = d === todayStr();
           const todayCls = isToday ? " row-today" : "";
           const todayMark = isToday ? ` <span class="today-badge">本日</span>` : "";
@@ -503,14 +520,14 @@ function renderOrderTab(){
             return `<tr class="row-holiday${todayCls}"${rowIdAttr}>
               <td>${fmtDateJP(d)}${todayMark}</td>
               <td><span style="color:var(--sub);">休（${label}）</span></td>
-              <td colspan="${state.menu.length}">${existingMenuName ? existingMenuName : "発注不可"}</td>
+              <td colspan="${state.menu.length+1}">${existingLabel ? existingLabel : "発注不可"}</td>
             </tr>`;
           }
           if(locked){
             return `<tr class="${todayCls.trim()}"${rowIdAttr}>
               <td>${fmtDateJP(d)}${todayMark}</td>
               <td><span style="color:var(--lock);">締切済み</span></td>
-              <td colspan="${state.menu.length}">${existingMenuName ? existingMenuName : "（発注なし）"}</td>
+              <td colspan="${state.menu.length+1}">${existingLabel ? existingLabel : "（発注なし）"}</td>
             </tr>`;
           }
           return `<tr class="${todayCls.trim()}"${rowIdAttr}>
@@ -520,11 +537,14 @@ function renderOrderTab(){
               <td class="checkbox-col" style="width:auto;text-align:center;">
                 <input type="checkbox" class="calCheckbox" data-date="${d}" data-menu="${m.id}" ${existing===m.id?"checked":""}>
               </td>`).join("")}
+            <td class="checkbox-col" style="width:56px;">
+              <input type="number" class="calQtyInput" data-date="${d}" min="1" value="${existingQty}" style="width:52px;padding:4px;">
+            </td>
           </tr>`;
         }).join("")}
       </table>
       </div>
-      <div class="hint">1日につき1つのメニューにチェックしてください（別のメニューにチェックすると自動的に切り替わります）。取り消す場合はチェックを外してください。</div>
+      <div class="hint">1日につき1つのメニューにチェックしてください（別のメニューにチェックすると自動的に切り替わります）。取り消す場合はチェックを外してください。「数量」は通常1のままで構いません。まれに複数個発注したい場合のみ変更してください。</div>
       <button class="primary" id="batchOrderBtn">まとめて発注する</button>
       ${batchMessage ? `<div class="status-box status-ok">${batchMessage}</div>` : ""}
     </div>
@@ -615,9 +635,12 @@ function collectOrderChanges(){
     if(isLocked(d) || isNonOrderableDay(d)) return; // 念のため締切済み・発注不可日は無視
     const checked = document.querySelector(`.calCheckbox[data-date="${d}"]:checked`);
     const menuId = checked ? checked.dataset.menu : null;
+    const qtyInput = document.querySelector(`.calQtyInput[data-date="${d}"]`);
+    const qty = Math.max(1, parseInt(qtyInput && qtyInput.value, 10) || 1);
     const existing = existingMenuFor(session.employeeId, d);
+    const existingQty = existingQtyFor(session.employeeId, d);
     if(menuId){
-      if(existing !== menuId) changes.push({date:d, action:"place", menuId});
+      if(existing !== menuId || existingQty !== qty) changes.push({date:d, action:"place", menuId, qty});
     } else if(existing){
       changes.push({date:d, action:"cancel"});
     }
@@ -630,9 +653,9 @@ async function placeBatchOrders(changes){
   for(const c of changes){
     try{
       if(c.action === "place"){
-        await sbRpc("rpc_place_order", {p_token: session.token, p_date: c.date, p_menu_id: c.menuId});
+        await sbRpc("rpc_place_order", {p_token: session.token, p_date: c.date, p_menu_id: c.menuId, p_qty: c.qty || 1});
         if(!state.orders[c.date]) state.orders[c.date] = {};
-        state.orders[c.date][session.employeeId] = c.menuId;
+        state.orders[c.date][session.employeeId] = { menuId: c.menuId, qty: c.qty || 1 };
         ordered++;
       } else {
         await sbRpc("rpc_cancel_order", {p_token: session.token, p_date: c.date});
@@ -778,19 +801,21 @@ function renderEmployeesAdmin(container){
         <input type="text" id="newEmpName" placeholder="氏名">
         <input type="text" id="newEmpDept" placeholder="部署">
         <input type="text" id="newEmpOrgCode" placeholder="組織コード">
+        <select id="newEmpType">
+          <option value="employee">社員</option>
+          <option value="executive">役員</option>
+          <option value="dispatch">派遣</option>
+        </select>
         <label style="display:flex;align-items:center;gap:4px;flex:0 0 auto;min-width:auto;margin:0;">
           <input type="checkbox" id="newEmpIsAdmin"> 管理者
         </label>
-        <label style="display:flex;align-items:center;gap:4px;flex:0 0 auto;min-width:auto;margin:0;">
-          <input type="checkbox" id="newEmpIsExecutive"> 役員
-        </label>
         <button class="secondary" id="addEmpBtn" style="flex:0 0 auto;">追加</button>
       </div>
-      <div class="hint">社員CDは発注画面・管理タブ共通のログインIDです。重複しない値を設定してください。「管理者」にチェックすると、その社員CDで管理タブにログインできるようになります。組織コードは受取確認リストの所属グループ表示・一覧の並び順に使用します。「役員」にチェックすると、発注画面・集計で役員価格が適用されます（チェックなしは社員価格）。</div>
+      <div class="hint">社員CDは発注画面・管理タブ共通のログインIDです。重複しない値を設定してください。「管理者」にチェックすると、その社員CDで管理タブにログインできるようになります。組織コードは受取確認リストの所属グループ表示・一覧の並び順に使用します。区分（社員/役員/派遣）に応じて、発注画面・集計で対応する価格が適用されます。</div>
     </div>
     <div class="card">
       <h2>CSV一括取込・出力</h2>
-      <div class="hint">CSV形式: 社員CD,氏名,部署,組織コード,役員フラグ（1/0。1行目はヘッダーでも可）。CSV取込では管理者権限は付与されません（一覧から個別に設定してください）。</div>
+      <div class="hint">CSV形式: 社員CD,氏名,部署,組織コード,区分（employee/executive/dispatch。1行目はヘッダーでも可）。CSV取込では管理者権限は付与されません（一覧から個別に設定してください）。</div>
       <input type="file" id="csvInput" accept=".csv" style="margin-top:8px;">
       <div class="row" style="margin-top:10px;">
         <button class="secondary" id="csvExportBtn">CSVで出力</button>
@@ -803,7 +828,7 @@ function renderEmployeesAdmin(container){
         <tr>
           <th>社員CD</th><th>氏名</th><th>部署</th>
           <th id="orgCodeSortHeader" style="cursor:pointer;white-space:nowrap;">組織コード ${empSortAsc ? "▲" : "▼"}</th>
-          <th>管理者</th><th>役員</th><th class="no-print">操作</th>
+          <th>管理者</th><th>区分</th><th class="no-print">操作</th>
         </tr>
         ${list.map(e=>`
           <tr>
@@ -812,7 +837,13 @@ function renderEmployeesAdmin(container){
             <td><input type="text" data-field="dept" data-id="${e.id}" value="${e.dept}"></td>
             <td><input type="text" data-field="orgCode" data-id="${e.id}" value="${e.orgCode||""}"></td>
             <td style="text-align:center;"><input type="checkbox" class="adminCheckbox" data-id="${e.id}" ${e.isAdmin?"checked":""}></td>
-            <td style="text-align:center;"><input type="checkbox" class="executiveCheckbox" data-id="${e.id}" ${e.isExecutive?"checked":""}></td>
+            <td>
+              <select class="employeeTypeSelect" data-id="${e.id}">
+                <option value="employee" ${e.employeeType==="employee"?"selected":""}>社員</option>
+                <option value="executive" ${e.employeeType==="executive"?"selected":""}>役員</option>
+                <option value="dispatch" ${e.employeeType==="dispatch"?"selected":""}>派遣</option>
+              </select>
+            </td>
             <td class="no-print"><button class="danger" data-del="${e.id}">削除</button></td>
           </tr>`).join("")}
       </table>
@@ -829,12 +860,12 @@ function renderEmployeesAdmin(container){
     const name = container.querySelector("#newEmpName").value.trim();
     const dept = container.querySelector("#newEmpDept").value.trim();
     const orgCode = container.querySelector("#newEmpOrgCode").value.trim();
+    const employeeType = container.querySelector("#newEmpType").value;
     const isAdmin = container.querySelector("#newEmpIsAdmin").checked;
-    const isExecutive = container.querySelector("#newEmpIsExecutive").checked;
     if(!name || !code){ alert("社員CDと氏名は必須です"); return; }
     withLoading(async ()=>{
       try{
-        await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept, p_is_admin: isAdmin, p_org_code: orgCode, p_is_executive: isExecutive});
+        await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept, p_is_admin: isAdmin, p_org_code: orgCode, p_employee_type: employeeType});
         const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
         state.employees = rows.map(mapEmployee);
       }catch(e){ alert(friendlyError(e)); }
@@ -848,7 +879,7 @@ function renderEmployeesAdmin(container){
       const updated = Object.assign({}, emp, {[inp.dataset.field]: inp.value});
       withLoading(async ()=>{
         try{
-          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||"", p_is_executive: updated.isExecutive});
+          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||"", p_employee_type: updated.employeeType||"employee"});
           const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
           state.employees = rows.map(mapEmployee);
         }catch(e){ alert(friendlyError(e)); }
@@ -871,7 +902,7 @@ function renderEmployeesAdmin(container){
       const updated = Object.assign({}, emp, {isAdmin: cb.checked});
       withLoading(async ()=>{
         try{
-          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||"", p_is_executive: updated.isExecutive});
+          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||"", p_employee_type: updated.employeeType||"employee"});
           const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
           state.employees = rows.map(mapEmployee);
         }catch(e){ alert(friendlyError(e)); }
@@ -879,14 +910,14 @@ function renderEmployeesAdmin(container){
     };
   });
 
-  container.querySelectorAll(".executiveCheckbox").forEach(cb=>{
-    cb.onchange = ()=>{
-      const emp = state.employees.find(x=>x.id===cb.dataset.id);
+  container.querySelectorAll(".employeeTypeSelect").forEach(sel=>{
+    sel.onchange = ()=>{
+      const emp = state.employees.find(x=>x.id===sel.dataset.id);
       if(!emp) return;
-      const updated = Object.assign({}, emp, {isExecutive: cb.checked});
+      const updated = Object.assign({}, emp, {employeeType: sel.value});
       withLoading(async ()=>{
         try{
-          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||"", p_is_executive: updated.isExecutive});
+          await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: updated.id, p_code: updated.code, p_name: updated.name, p_dept: updated.dept, p_is_admin: updated.isAdmin, p_org_code: updated.orgCode||"", p_employee_type: updated.employeeType||"employee"});
           const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
           state.employees = rows.map(mapEmployee);
         }catch(e){ alert(friendlyError(e)); }
@@ -918,11 +949,13 @@ function renderEmployeesAdmin(container){
         for(const line of lines){
           const parts = line.split(",").map(p=>p.trim());
           if(parts[0] === "社員CD" || parts[0] === "氏名" || parts[0] === "code") continue;
-          const [code, name, dept, orgCode, execFlag] = parts;
+          const [code, name, dept, orgCode, typeRaw] = parts;
           if(!code || !name) continue;
-          const isExecutive = execFlag === "1" || execFlag === "役員" || execFlag === "true";
+          let employeeType = "employee";
+          if(typeRaw === "executive" || typeRaw === "役員") employeeType = "executive";
+          else if(typeRaw === "dispatch" || typeRaw === "派遣") employeeType = "dispatch";
           try{
-            await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept||"", p_is_admin: false, p_org_code: orgCode||"", p_is_executive: isExecutive});
+            await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept||"", p_is_admin: false, p_org_code: orgCode||"", p_employee_type: employeeType});
             added++;
           }catch(err){ skipped++; }
         }
@@ -935,7 +968,7 @@ function renderEmployeesAdmin(container){
   };
 
   container.querySelector("#csvExportBtn").onclick = ()=>{
-    const csv = "社員CD,氏名,部署,組織コード,役員フラグ\n" + state.employees.map(e=>`${e.code||""},${e.name},${e.dept},${e.orgCode||""},${e.isExecutive?"1":"0"}`).join("\n");
+    const csv = "社員CD,氏名,部署,組織コード,区分\n" + state.employees.map(e=>`${e.code||""},${e.name},${e.dept},${e.orgCode||""},${e.employeeType||"employee"}`).join("\n");
     downloadFile("対象者リスト.csv", csv);
   };
 }
@@ -957,20 +990,22 @@ function renderMenuAdmin(container){
         <input type="text" id="newMenuName" placeholder="メニュー名">
         <input type="number" id="newMenuPriceEmployee" placeholder="価格（社員）">
         <input type="number" id="newMenuPriceExecutive" placeholder="価格（役員）">
+        <input type="number" id="newMenuPriceDispatch" placeholder="価格（派遣）">
         <input type="text" id="newMenuFax" placeholder="発注先FAX番号">
         <button class="secondary" id="addMenuBtn" style="flex:0 0 auto;">追加</button>
       </div>
-      <div class="hint">「価格（社員）」「価格（役員）」はそれぞれ発注画面・集計に反映されます。「発注先FAX番号」は発注画面には表示されません（管理者のみが確認できます）。</div>
+      <div class="hint">「価格（社員）」「価格（役員）」「価格（派遣）」はそれぞれ発注画面・集計に反映されます。「発注先FAX番号」は発注画面には表示されません（管理者のみが確認できます）。</div>
     </div>
     <div class="card">
       <h2>メニュー一覧</h2>
       <table>
-        <tr><th>メニュー名</th><th>価格（社員）</th><th>価格（役員）</th><th>発注先FAX番号</th><th class="no-print">操作</th></tr>
+        <tr><th>メニュー名</th><th>価格（社員）</th><th>価格（役員）</th><th>価格（派遣）</th><th>発注先FAX番号</th><th class="no-print">操作</th></tr>
         ${list.map(m=>`
           <tr>
             <td><input type="text" data-field="name" data-id="${m.id}" value="${m.name}"></td>
             <td><input type="number" data-field="priceEmployee" data-id="${m.id}" value="${m.priceEmployee}"></td>
             <td><input type="number" data-field="priceExecutive" data-id="${m.id}" value="${m.priceExecutive}"></td>
+            <td><input type="number" data-field="priceDispatch" data-id="${m.id}" value="${m.priceDispatch}"></td>
             <td><input type="text" data-field="faxNumber" data-id="${m.id}" value="${m.faxNumber||""}"></td>
             <td class="no-print"><button class="danger" data-del="${m.id}">削除</button></td>
           </tr>`).join("")}
@@ -982,11 +1017,12 @@ function renderMenuAdmin(container){
     const name = container.querySelector("#newMenuName").value.trim();
     const priceEmployee = Number(container.querySelector("#newMenuPriceEmployee").value) || 0;
     const priceExecutive = Number(container.querySelector("#newMenuPriceExecutive").value) || 0;
+    const priceDispatch = Number(container.querySelector("#newMenuPriceDispatch").value) || 0;
     const faxNumber = container.querySelector("#newMenuFax").value.trim();
     if(!name) return;
     withLoading(async ()=>{
       try{
-        await sbRpc("rpc_admin_upsert_menu", {p_token: session.token, p_id: null, p_name: name, p_price_employee: priceEmployee, p_price_executive: priceExecutive, p_fax_number: faxNumber});
+        await sbRpc("rpc_admin_upsert_menu", {p_token: session.token, p_id: null, p_name: name, p_price_employee: priceEmployee, p_price_executive: priceExecutive, p_price_dispatch: priceDispatch, p_fax_number: faxNumber});
         await reloadMenuEverywhere();
       }catch(e){ alert(friendlyError(e)); }
     });
@@ -996,11 +1032,11 @@ function renderMenuAdmin(container){
     inp.onchange = ()=>{
       const m = list.find(x=>x.id===inp.dataset.id);
       if(!m) return;
-      const isNumberField = inp.dataset.field==="priceEmployee" || inp.dataset.field==="priceExecutive";
+      const isNumberField = inp.dataset.field==="priceEmployee" || inp.dataset.field==="priceExecutive" || inp.dataset.field==="priceDispatch";
       const updated = Object.assign({}, m, {[inp.dataset.field]: isNumberField ? Number(inp.value) : inp.value});
       withLoading(async ()=>{
         try{
-          await sbRpc("rpc_admin_upsert_menu", {p_token: session.token, p_id: updated.id, p_name: updated.name, p_price_employee: updated.priceEmployee, p_price_executive: updated.priceExecutive, p_fax_number: updated.faxNumber||""});
+          await sbRpc("rpc_admin_upsert_menu", {p_token: session.token, p_id: updated.id, p_name: updated.name, p_price_employee: updated.priceEmployee, p_price_executive: updated.priceExecutive, p_price_dispatch: updated.priceDispatch, p_fax_number: updated.faxNumber||""});
           await reloadMenuEverywhere();
         }catch(e){ alert(friendlyError(e)); }
       });
@@ -1107,7 +1143,7 @@ const FAX_SENDER_INFO = {
 function printFaxSheet(menuId, dateStr, rowsForDate){
   const menu = (state.menu||[]).find(m=>m.id===menuId) || (state.adminMenu||[]).find(m=>m.id===menuId);
   if(!menu){ alert("メニューを選択してください"); return; }
-  const qty = rowsForDate.filter(r=>r.menu_id===menuId).length;
+  const qty = rowsForDate.filter(r=>r.menu_id===menuId).reduce((s,r)=> s + (r.qty||1), 0);
   const html = `
     <div class="fax-sheet">
       <h1>FAX送付状</h1>
@@ -1141,11 +1177,16 @@ function printFaxSheet(menuId, dateStr, rowsForDate){
 
 function renderSummaryAdmin(container){
   const rows = summaryRows;
-  const empCountByMenu = {}, execCountByMenu = {};
+  const qtyByMenuType = {}; // { menuId: { employee: qty, executive: qty, dispatch: qty } }
   rows.forEach(r=>{
-    if(r.is_executive) execCountByMenu[r.menu_id] = (execCountByMenu[r.menu_id]||0) + 1;
-    else empCountByMenu[r.menu_id] = (empCountByMenu[r.menu_id]||0) + 1;
+    if(!qtyByMenuType[r.menu_id]) qtyByMenuType[r.menu_id] = { employee:0, executive:0, dispatch:0 };
+    const t = qtyByMenuType[r.menu_id];
+    t[r.employee_type || "employee"] = (t[r.employee_type || "employee"]||0) + (r.qty||1);
   });
+  const totalQtyByType = { employee:0, executive:0, dispatch:0 };
+  rows.forEach(r=>{ totalQtyByType[r.employee_type || "employee"] += (r.qty||1); });
+  const totalQty = rows.reduce((s,r)=> s + (r.qty||1), 0);
+  const totalAmount = rows.reduce((s,r)=> s + (r.amount||0), 0);
 
   container.innerHTML = `
     <div class="card no-print">
@@ -1155,31 +1196,34 @@ function renderSummaryAdmin(container){
     <div class="card" id="printArea">
       <h2>発注集計（業者発注書）— ${fmtDateJP(summaryDate)}</h2>
       <table>
-        <tr><th>メニュー</th><th>社員数量</th><th>役員数量</th><th>合計数量</th><th>小計</th></tr>
+        <tr><th>メニュー</th><th>社員数量</th><th>役員数量</th><th>派遣数量</th><th>合計数量</th><th>小計</th></tr>
         ${state.menu.map(m=>{
-          const empCount = empCountByMenu[m.id]||0, execCount = execCountByMenu[m.id]||0;
-          const subtotal = empCount*(m.priceEmployee||0) + execCount*(m.priceExecutive||0);
+          const t = qtyByMenuType[m.id] || { employee:0, executive:0, dispatch:0 };
+          const menuTotalQty = t.employee + t.executive + t.dispatch;
+          const subtotal = t.employee*(m.priceEmployee||0) + t.executive*(m.priceExecutive||0) + t.dispatch*(m.priceDispatch||0);
           return `
           <tr>
             <td>${m.name}</td>
-            <td>${empCount}</td>
-            <td>${execCount}</td>
-            <td>${empCount+execCount}</td>
+            <td>${t.employee}</td>
+            <td>${t.executive}</td>
+            <td>${t.dispatch}</td>
+            <td>${menuTotalQty}</td>
             <td>¥${subtotal.toLocaleString()}</td>
           </tr>`;
         }).join("")}
         <tr class="total-row">
           <td>合計</td>
-          <td>${rows.filter(r=>!r.is_executive).length}</td>
-          <td>${rows.filter(r=>r.is_executive).length}</td>
-          <td>${rows.length}</td>
-          <td>¥${rows.reduce((s,r)=>s + (r.price||0),0).toLocaleString()}</td>
+          <td>${totalQtyByType.employee}</td>
+          <td>${totalQtyByType.executive}</td>
+          <td>${totalQtyByType.dispatch}</td>
+          <td>${totalQty}</td>
+          <td>¥${totalAmount.toLocaleString()}</td>
         </tr>
       </table>
       <h2 style="margin-top:20px;">発注者一覧</h2>
       <table>
-        <tr><th>氏名</th><th>部署</th><th>メニュー</th><th>区分</th></tr>
-        ${rows.map(r=>`<tr><td>${r.name}</td><td>${r.dept}</td><td>${r.menu_name}</td><td>${r.is_executive?"役員":"社員"}</td></tr>`).join("")}
+        <tr><th>氏名</th><th>部署</th><th>メニュー</th><th>区分</th><th>数量</th><th>金額</th></tr>
+        ${rows.map(r=>`<tr><td>${r.name}</td><td>${r.dept}</td><td>${r.menu_name}</td><td>${employeeTypeLabel(r.employee_type)}</td><td>${r.qty||1}</td><td>¥${(r.amount||0).toLocaleString()}</td></tr>`).join("")}
       </table>
     </div>
     <div class="card no-print">
@@ -1187,7 +1231,10 @@ function renderSummaryAdmin(container){
       <div class="hint">「印刷」を押すと、送付するメニューを選んだうえでFAX送付状（会社名・部署名・担当者・電話番号・FAX番号・注文日・注文数量を記載したA4縦1枚）のみを印刷できます。</div>
       <div class="row" style="margin-top:8px;">
         <select id="faxMenuSelect">
-          ${state.menu.map(m=>`<option value="${m.id}">${m.name}（${(empCountByMenu[m.id]||0)+(execCountByMenu[m.id]||0)}個）</option>`).join("")}
+          ${state.menu.map(m=>{
+            const t = qtyByMenuType[m.id] || { employee:0, executive:0, dispatch:0 };
+            return `<option value="${m.id}">${m.name}（${t.employee+t.executive+t.dispatch}個）</option>`;
+          }).join("")}
         </select>
         <button class="primary" id="printFaxBtn" style="flex:0 0 auto;">印刷</button>
       </div>
@@ -1207,7 +1254,7 @@ function renderSummaryAdmin(container){
   };
   container.querySelector("#printSummaryBtn").onclick = ()=> window.print();
   container.querySelector("#csvSummaryBtn").onclick = ()=>{
-    let csv = "氏名,部署,メニュー,区分\n" + rows.map(r=>`${r.name},${r.dept},${r.menu_name},${r.is_executive?"役員":"社員"}`).join("\n");
+    let csv = "氏名,部署,メニュー,区分,数量,金額\n" + rows.map(r=>`${r.name},${r.dept},${r.menu_name},${employeeTypeLabel(r.employee_type)},${r.qty||1},${r.amount||0}`).join("\n");
     downloadFile(`発注一覧_${summaryDate}.csv`, csv);
   };
 }
@@ -1259,7 +1306,7 @@ function renderReceiptAdmin(container){
           ${g.rows.map(r=>`
             <tr>
               <td class="date-col">${fmtDateJP(receiptDate)}</td>
-              <td>${r.name}</td>
+              <td>${r.name}${(r.qty && r.qty > 1) ? ` ×${r.qty}` : ""}</td>
               <td class="checkbox-col"><span class="checkbox-box"></span></td>
             </tr>`).join("")}
         `).join("")}
@@ -1280,23 +1327,30 @@ function renderReceiptAdmin(container){
   container.querySelector("#printReceiptBtn").onclick = ()=> window.print();
 }
 
-/* --- 月次集計（16日〜15日の発注月度でCSV出力） --- */
+/* --- 月次集計（16日〜15日の発注月度でCSV出力。日付ごとの発注金額が分かる明細形式） --- */
 let monthlyYm = periodLabelFor(todayStr());
-let monthlyRows = []; // 集計後: [{code, name, amount}]
+let monthlyGroups = []; // 集計後: [{code, name, rows:[{date, amount}], total}]
 
-// 期間内の生の発注データ（社員別・個人単価反映済み）を社員ごとに合算する
-function aggregateOrdersByEmployee(rawRows){
+// 期間内の生の発注データ（社員別・個人単価反映済みのamountを含む）を社員ごとにグループ化し、
+// 各社員の中で日付ごとの明細行を作る（日付ごとの発注金額が分かる形式）
+function aggregateOrdersByEmployeeDate(rawRows){
   const map = new Map();
   rawRows.forEach(r=>{
-    if(!map.has(r.employee_id)) map.set(r.employee_id, {code: r.code, name: r.name, amount: 0});
-    map.get(r.employee_id).amount += (r.price||0);
+    if(!map.has(r.employee_id)) map.set(r.employee_id, { code: r.code, name: r.name, rows: [], total: 0 });
+    const g = map.get(r.employee_id);
+    g.rows.push({ date: r.date, amount: r.amount || 0 });
+    g.total += (r.amount || 0);
   });
-  return [...map.values()].sort((a,b)=> (a.code||"").localeCompare(b.code||"", "ja", {numeric:true}));
+  const groups = [...map.values()];
+  groups.forEach(g=> g.rows.sort((a,b)=> a.date.localeCompare(b.date)));
+  groups.sort((a,b)=> (a.code||"").localeCompare(b.code||"", "ja", {numeric:true}));
+  return groups;
 }
 
 function renderMonthlyAdmin(container){
   const {start, end} = periodRange(monthlyYm);
   const [, m] = monthlyYm.split("-");
+  const grandTotal = monthlyGroups.reduce((s,g)=> s + g.total, 0);
 
   container.innerHTML = `
     <div class="card no-print">
@@ -1306,34 +1360,42 @@ function renderMonthlyAdmin(container){
       <button class="primary" id="monthlyRunBtn">集計する</button>
     </div>
     <div class="card">
-      <h2>${Number(m)}月度 発注金額集計（${fmtDateJP(start)}〜${fmtDateJP(end)}）</h2>
+      <h2>${Number(m)}月度 発注金額集計（${fmtDateJP(start)}〜${fmtDateJP(end)}、日付別）</h2>
+      <div class="hint">社員ごとに、発注した日付とその日の発注金額を一覧表示します。CSV出力も同じ日付別の明細形式です。</div>
+      <div class="table-scroll">
       <table>
-        <tr><th>社員CD</th><th>氏名</th><th>発注金額</th></tr>
-        ${monthlyRows.length
-          ? monthlyRows.map(r=>`<tr><td>${r.code||""}</td><td>${r.name}</td><td>¥${r.amount.toLocaleString()}</td></tr>`).join("")
-          : `<tr><td colspan="3" class="hint">「集計する」を押してください</td></tr>`}
-        ${monthlyRows.length ? `<tr class="total-row"><td colspan="2">合計</td><td>¥${monthlyRows.reduce((s,r)=>s+r.amount,0).toLocaleString()}</td></tr>` : ""}
+        <tr><th>社員CD</th><th>氏名</th><th>日付</th><th>発注金額</th></tr>
+        ${monthlyGroups.length ? monthlyGroups.map(g=>`
+          ${g.rows.map(r=>`<tr><td>${g.code||""}</td><td>${g.name}</td><td>${fmtDateJP(r.date)}</td><td>¥${r.amount.toLocaleString()}</td></tr>`).join("")}
+          <tr class="dept-group-row"><td colspan="3">${g.name} 小計</td><td>¥${g.total.toLocaleString()}</td></tr>
+        `).join("") : `<tr><td colspan="4" class="hint">「集計する」を押してください</td></tr>`}
+        ${monthlyGroups.length ? `<tr class="total-row"><td colspan="3">合計</td><td>¥${grandTotal.toLocaleString()}</td></tr>` : ""}
       </table>
+      </div>
     </div>
     <div class="no-print" style="margin-top:10px;">
-      <button class="secondary" id="csvMonthlyBtn" ${monthlyRows.length ? "" : "disabled"}>CSV出力</button>
+      <button class="secondary" id="csvMonthlyBtn" ${monthlyGroups.length ? "" : "disabled"}>CSV出力</button>
     </div>
   `;
   container.querySelector("#monthlyYmInput").onchange = (e)=>{
     if(e.target.value) monthlyYm = e.target.value;
-    monthlyRows = [];
+    monthlyGroups = [];
     renderMonthlyAdmin(container);
   };
   container.querySelector("#monthlyRunBtn").onclick = ()=>{
     withLoading(async ()=>{
       const range = periodRange(monthlyYm);
       const raw = await sbRpc("rpc_admin_orders_in_range", {p_token: session.token, p_start_date: range.start, p_end_date: range.end});
-      monthlyRows = aggregateOrdersByEmployee(raw);
+      monthlyGroups = aggregateOrdersByEmployeeDate(raw);
     });
   };
   container.querySelector("#csvMonthlyBtn").onclick = ()=>{
-    if(!monthlyRows.length) return;
-    const csv = "社員CD,氏名,発注金額\n" + monthlyRows.map(r=>`${r.code||""},${r.name},${r.amount}`).join("\n");
+    if(!monthlyGroups.length) return;
+    const lines = [];
+    monthlyGroups.forEach(g=>{
+      g.rows.forEach(r=>{ lines.push(`${g.code||""},${g.name},${r.date},${r.amount}`); });
+    });
+    const csv = "社員CD,氏名,日付,発注金額\n" + lines.join("\n");
     downloadFile(`月次発注金額集計_${monthlyYm}.csv`, csv);
   };
 }
