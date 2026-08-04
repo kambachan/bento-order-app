@@ -496,6 +496,7 @@ function renderOrderTab(){
     const m = state.menu.find(x=>x.id===menuId);
     return sum + priceForMenu(m) * existingQtyFor(session.employeeId, d);
   }, 0);
+  const monthlyTotalQty = orderedDates.reduce((sum, d)=> sum + existingQtyFor(session.employeeId, d), 0);
 
   app.innerHTML = `
     <div class="card no-print">
@@ -515,12 +516,11 @@ function renderOrderTab(){
         <input type="month" id="monthSelect" value="${calendarYearMonth}">
         <button class="secondary" id="nextMonthBtn" style="flex:0 0 auto;">次月度 →</button>
       </div>
-      <div class="hint">発注月度は毎月16日始まり・翌月15日締め（例: ${Number(ymMonth)}月度 = ${fmtDateJP(periodStart)}〜${fmtDateJP(periodEnd)}）</div>
-      <div class="hint">締切ルール: 対象日の${state.deadline.daysBefore}日前 ${state.deadline.time} まで</div>
+      <div class="hint">締切ルール：${state.deadline.daysBefore>0 ? `対象日の${state.deadline.daysBefore}日前 ${state.deadline.time} まで` : `当日${state.deadline.time}まで`}</div>
     </div>
 
     <div class="card">
-      <h2>${ymYear}年${Number(ymMonth)}月度（${fmtDateJP(periodStart)}〜${fmtDateJP(periodEnd)}） 一括発注</h2>
+      <h2>発注</h2>
       <div class="table-scroll">
       <table>
         <tr>
@@ -572,13 +572,16 @@ function renderOrderTab(){
       </table>
       </div>
       <div class="hint">1日につき1つのメニューにチェックしてください（別のメニューにチェックすると自動的に切り替わります）。取り消す場合はチェックを外してください。「数量」は通常1のままで構いません。まれに複数個発注したい場合のみ変更してください。</div>
-      <button class="primary" id="batchOrderBtn">まとめて発注する</button>
+      <button class="primary" id="batchOrderBtn">発注</button>
       ${batchMessage ? `<div class="status-box status-ok">${batchMessage}</div>` : ""}
     </div>
 
     <div class="card">
       <h2>${ymYear}年${Number(ymMonth)}月度の発注回数・金額</h2>
-      <div class="status-box status-ok">${Number(ymMonth)}月度は ${orderedDates.length} 回発注しています（発注金額累計: ¥${monthlyTotalAmount.toLocaleString()}）</div>
+      <table>
+        <tr><th>発注数量</th><th>金額</th></tr>
+        <tr><td>${monthlyTotalQty}</td><td>¥${monthlyTotalAmount.toLocaleString()}</td></tr>
+      </table>
     </div>
   `;
 
