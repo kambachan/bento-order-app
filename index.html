@@ -91,6 +91,8 @@
     .receipt-table .dept-group-row td{padding:2px 6px;}
     body.printing-fax > *:not(#faxSheetHolder){display:none !important;}
     body.printing-fax #faxSheetHolder{display:block;}
+    .receipt-page{ page-break-after: always; }
+    .receipt-page:last-child{ page-break-after: auto; }
   }
 </style>
 </head>
@@ -1318,10 +1320,9 @@ function renderSummaryAdmin(container){
 /* --- 受取確認リスト --- */
 let receiptDate = todayStr();
 let receiptRows = [];
-let receiptMenuFilter = ""; // ""なら全メニュー対象。メニューIDを指定するとそのメニューのみに絞り込む
 
-// 受取確認リストを所属（部署）ごとにグループ化し、各グループを組織コード昇順で並べる
-function groupReceiptRowsByDept(rows){
+// 所属（部署）の組織コード昇順、同じ部署内は氏名順に並べ替えたフラットな配列を返す
+function sortReceiptRowsByDept(rows){
   const groupMap = new Map();
   rows.forEach(r=>{
     const key = r.dept || "(所属未設定)";
@@ -1334,39 +1335,40 @@ function groupReceiptRowsByDept(rows){
   const groups = [...groupMap.values()];
   groups.sort((a,b)=> (a.orgCode||"").localeCompare(b.orgCode||"", "ja", {numeric:true}));
   groups.forEach(g=> g.rows.sort((a,b)=> a.name.localeCompare(b.name,"ja")));
-  return groups;
+  const flat = [];
+  groups.forEach(g=> g.rows.forEach(r=> flat.push(r)));
+  return flat;
 }
 
+// 対象日に発注があったメニューごとに1ページずつ、受取チェック欄・部署・氏名の順で一覧を作る
 function renderReceiptAdmin(container){
-  const filteredRows = receiptMenuFilter ? receiptRows.filter(r=>r.menu_id===receiptMenuFilter) : receiptRows;
-  const groups = groupReceiptRowsByDept(filteredRows);
-  const totalCount = filteredRows.length;
-  const filterMenuName = receiptMenuFilter ? (state.menu.find(m=>m.id===receiptMenuFilter)?.name || "") : "";
+  const menusWithOrders = state.menu.filter(m=> receiptRows.some(r=>r.menu_id===m.id));
+
+  const pagesHtml = menusWithOrders.map(m=>{
+    const rowsForMenu = sortReceiptRowsByDept(receiptRows.filter(r=>r.menu_id===m.id));
+    return `
+      <div class="receipt-page">
+        <h2>${m.name}　${fmtDateJP(receiptDate)}</h2>
+        <table class="receipt-table">
+          <tr><th class="checkbox-col">✓</th><th>部署</th><th>氏名</th></tr>
+          ${rowsForMenu.map(r=>`
+            <tr>
+              <td class="checkbox-col"><span class="checkbox-box"></span></td>
+              <td>${r.dept}</td>
+              <td>${r.name}${(r.qty && r.qty > 1) ? ` ×${r.qty}` : ""}</td>
+            </tr>`).join("")}
+        </table>
+      </div>`;
+  }).join("");
 
   container.innerHTML = `
     <div class="card no-print">
-      <h2>対象日・メニュー</h2>
+      <h2>対象日</h2>
       <input type="date" id="receiptDateInput" value="${receiptDate}">
-      <label>メニューで絞り込み</label>
-      <select id="receiptMenuSelect">
-        <option value="">すべてのメニュー</option>
-        ${state.menu.map(m=>`<option value="${m.id}" ${receiptMenuFilter===m.id?"selected":""}>${m.name}</option>`).join("")}
-      </select>
+      <div class="hint">「印刷」を押すと、この日に発注があったメニューごとに自動でページを分けて印刷します（1メニュー1ページ、1ページに約50名分を想定した行幅です）。</div>
     </div>
     <div class="card" id="printArea">
-      <h2>${filterMenuName ? `${filterMenuName}　` : ""}${fmtDateJP(receiptDate)}</h2>
-      <table class="receipt-table">
-        <tr><th class="date-col">日付</th><th>氏名</th><th class="checkbox-col">✓</th></tr>
-        ${groups.map(g=>`
-          <tr class="dept-group-row"><td colspan="3">${g.dept}（${g.rows.length}名）</td></tr>
-          ${g.rows.map(r=>`
-            <tr>
-              <td class="date-col">${fmtDateJP(receiptDate)}</td>
-              <td>${r.name}${(r.qty && r.qty > 1) ? ` ×${r.qty}` : ""}</td>
-              <td class="checkbox-col"><span class="checkbox-box"></span></td>
-            </tr>`).join("")}
-        `).join("")}
-      </table>
+      ${menusWithOrders.length ? pagesHtml : `<div class="hint">この日は発注がありません</div>`}
     </div>
     <div class="no-print" style="margin-top:10px;">
       <button class="secondary" id="printReceiptBtn">印刷</button>
@@ -1375,10 +1377,6 @@ function renderReceiptAdmin(container){
   container.querySelector("#receiptDateInput").onchange = (e)=>{
     receiptDate = e.target.value;
     withLoading(async ()=>{ receiptRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: receiptDate}); });
-  };
-  container.querySelector("#receiptMenuSelect").onchange = (e)=>{
-    receiptMenuFilter = e.target.value;
-    renderReceiptAdmin(container);
   };
   container.querySelector("#printReceiptBtn").onclick = ()=> window.print();
 }
