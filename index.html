@@ -1707,11 +1707,24 @@ async function exportMonthlyExcel({ monthlyYm, monthlyGroups, deptTotals, menuTo
 let proxyEmployeeId = "";
 let proxyYm = periodLabelFor(todayStr());
 let proxyMessage = "";
+let proxySearchTerm = "";
+
+// 社員CD・氏名・部署・集計用部署名のいずれかに検索語を含む対象者かどうかを判定する
+function employeeMatchesSearch(emp, term){
+  if(!term) return true;
+  const t = term.toLowerCase();
+  return (emp.code||"").toLowerCase().includes(t)
+    || (emp.name||"").toLowerCase().includes(t)
+    || (emp.dept||"").toLowerCase().includes(t)
+    || (emp.aggDept||"").toLowerCase().includes(t);
+}
 
 function renderProxyAdmin(container){
   const employees = [...state.employees].sort((a,b)=> (a.code||"").localeCompare(b.code||"", "ja", {numeric:true}));
   if(!proxyEmployeeId && employees.length) proxyEmployeeId = employees[0].id;
   const targetEmp = employees.find(e=>e.id===proxyEmployeeId);
+  // 検索語に一致する対象者のみ選択肢に表示する（現在選択中の対象者は、一致しなくても選択が外れないよう常に含める）
+  const visibleEmployees = employees.filter(e=> employeeMatchesSearch(e, proxySearchTerm) || e.id === proxyEmployeeId);
 
   const dates = datesInPeriod(proxyYm);
   const {start: periodStart, end: periodEnd} = periodRange(proxyYm);
@@ -1728,9 +1741,11 @@ function renderProxyAdmin(container){
     <div class="card">
       <h2>代理発注・修正（管理者用）</h2>
       <div class="hint">管理者が対象者になりかわって発注内容を登録・修正できます。<strong>締切後でも修正可能です</strong>（土日・祝日・発注不可日は対象外のままです）。</div>
-      <label>対象者</label>
+      <label>対象者を検索（社員CD・氏名・部署・集計用部署名）</label>
+      <input type="text" id="proxyEmpSearch" placeholder="例: 221323、神林、総務課" value="${proxySearchTerm}">
+      <label style="margin-top:8px;">対象者${proxySearchTerm ? `（${visibleEmployees.length}件ヒット）` : ""}</label>
       <select id="proxyEmpSelect">
-        ${employees.map(e=>`<option value="${e.id}" ${e.id===proxyEmployeeId?"selected":""}>${e.code||""} ${e.name}${e.dept?`（${e.dept}）`:""}</option>`).join("")}
+        ${visibleEmployees.length ? visibleEmployees.map(e=>`<option value="${e.id}" ${e.id===proxyEmployeeId?"selected":""}>${e.code||""} ${e.name}${e.dept?`（${e.dept}）`:""}</option>`).join("") : `<option value="">該当する対象者がいません</option>`}
       </select>
     </div>
     <div class="card no-print">
@@ -1791,7 +1806,17 @@ function renderProxyAdmin(container){
     </div>
   `;
 
+  container.querySelector("#proxyEmpSearch").oninput = (e)=>{
+    proxySearchTerm = e.target.value;
+    renderProxyAdmin(container);
+    // 再描画で失われるフォーカス・カーソル位置を検索欄に戻す
+    const searchInput = container.querySelector("#proxyEmpSearch");
+    searchInput.focus();
+    const pos = searchInput.value.length;
+    searchInput.setSelectionRange(pos, pos);
+  };
   container.querySelector("#proxyEmpSelect").onchange = (e)=>{
+    if(!e.target.value) return;
     proxyEmployeeId = e.target.value;
     proxyMessage = "";
     withLoading(()=> loadProxyOrdersForPeriod(proxyEmployeeId, proxyYm));
