@@ -67,7 +67,9 @@
   #faxSheetHolder{display:none;}
   .fax-sheet{width:100%;padding:20px;font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;}
   .fax-sheet h1{font-size:28px;text-align:center;border-bottom:3px solid #333;padding-bottom:14px;margin:0 0 26px;letter-spacing:4px;}
-  .fax-sheet .fax-menu-name{font-size:22px;font-weight:bold;text-align:center;margin:0 0 30px;padding:14px;border:2px solid #333;}
+  .fax-sheet .fax-menu-name{text-align:center;margin:0 0 30px;padding:14px;border:2px solid #333;}
+  .fax-sheet .fax-menu-name .fax-menu-line{font-size:20px;font-weight:bold;}
+  .fax-sheet .fax-menu-name .fax-title-line{font-size:34px;font-weight:bold;margin-top:8px;letter-spacing:6px;}
   .fax-info-table{width:100%;border-collapse:collapse;font-size:16px;}
   .fax-info-table th{width:150px;text-align:left;background:#f5f5f5;padding:12px 14px;border:1px solid #999;}
   .fax-info-table td{padding:12px 14px;border:1px solid #999;}
@@ -1208,7 +1210,10 @@ function printAllFaxSheets(dateStr, rowsForDate){
     <div class="fax-page">
       <div class="fax-sheet">
         <h1>FAX送付状</h1>
-        <div class="fax-menu-name">${menu.name}</div>
+        <div class="fax-menu-name">
+          <div class="fax-menu-line">${menu.name}　御中</div>
+          <div class="fax-title-line">発注書</div>
+        </div>
         <table class="fax-info-table">
           <tr><th>会社名</th><td>${FAX_SENDER_INFO.company}</td></tr>
           <tr><th>部署名</th><td>${FAX_SENDER_INFO.dept}</td></tr>
