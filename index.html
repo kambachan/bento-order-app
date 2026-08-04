@@ -1193,11 +1193,13 @@ function renderSummaryAdmin(container){
   rows.forEach(r=>{ totalQtyByType[r.employee_type || "employee"] += (r.qty||1); });
   const totalQty = rows.reduce((s,r)=> s + (r.qty||1), 0);
   const totalAmount = rows.reduce((s,r)=> s + (r.amount||0), 0);
+  const hasMultiQty = rows.some(r=> (r.qty||1) >= 2);
 
   container.innerHTML = `
     <div class="card no-print">
       <h2>集計対象日</h2>
       <input type="date" id="summaryDateInput" value="${summaryDate}">
+      ${hasMultiQty ? `<div style="color:#c0392b;font-weight:bold;margin-top:10px;">複数個発注している方がいます</div>` : ""}
     </div>
     <div class="card" id="printArea">
       <h2>発注集計（業者発注書）— ${fmtDateJP(summaryDate)}</h2>
@@ -1335,20 +1337,25 @@ function renderReceiptAdmin(container){
 
 /* --- 月次集計（16日〜15日の発注月度でCSV出力。日付ごとの発注金額が分かる明細形式） --- */
 let monthlyYm = periodLabelFor(todayStr());
-let monthlyGroups = []; // 集計後: [{code, name, rows:[{date, amount}], total}]
+let monthlyGroups = []; // 集計後: [{code, name, total, byDate: {date: amount}}]
+
+// 日付を「M/D」形式の短い表示にする（列見出し用）
+function fmtDateShort(dateStr){
+  const [, mo, da] = dateStr.split("-").map(Number);
+  return `${mo}/${da}`;
+}
 
 // 期間内の生の発注データ（社員別・個人単価反映済みのamountを含む）を社員ごとにグループ化し、
-// 各社員の中で日付ごとの明細行を作る（日付ごとの発注金額が分かる形式）
+// 日付ごとの金額を横持ち（列）で参照できる形にする（A:社員CD B:氏名 C:月間発注金額 D列以降:日付別金額）
 function aggregateOrdersByEmployeeDate(rawRows){
   const map = new Map();
   rawRows.forEach(r=>{
-    if(!map.has(r.employee_id)) map.set(r.employee_id, { code: r.code, name: r.name, rows: [], total: 0 });
+    if(!map.has(r.employee_id)) map.set(r.employee_id, { code: r.code, name: r.name, total: 0, byDate: {} });
     const g = map.get(r.employee_id);
-    g.rows.push({ date: r.date, amount: r.amount || 0 });
+    g.byDate[r.date] = (g.byDate[r.date] || 0) + (r.amount || 0);
     g.total += (r.amount || 0);
   });
   const groups = [...map.values()];
-  groups.forEach(g=> g.rows.sort((a,b)=> a.date.localeCompare(b.date)));
   groups.sort((a,b)=> (a.code||"").localeCompare(b.code||"", "ja", {numeric:true}));
   return groups;
 }
@@ -1356,6 +1363,7 @@ function aggregateOrdersByEmployeeDate(rawRows){
 function renderMonthlyAdmin(container){
   const {start, end} = periodRange(monthlyYm);
   const [, m] = monthlyYm.split("-");
+  const periodDates = datesInPeriod(monthlyYm);
   const grandTotal = monthlyGroups.reduce((s,g)=> s + g.total, 0);
 
   container.innerHTML = `
@@ -1366,16 +1374,31 @@ function renderMonthlyAdmin(container){
       <button class="primary" id="monthlyRunBtn">集計する</button>
     </div>
     <div class="card">
-      <h2>${Number(m)}月度 発注金額集計（${fmtDateJP(start)}〜${fmtDateJP(end)}、日付別）</h2>
-      <div class="hint">社員ごとに、発注した日付とその日の発注金額を一覧表示します。CSV出力も同じ日付別の明細形式です。</div>
+      <h2>${Number(m)}月度 発注金額集計（${fmtDateJP(start)}〜${fmtDateJP(end)}）</h2>
+      <div class="hint">社員CD・氏名・月間発注金額に続けて、日付ごとの発注金額を横並びで表示します（発注がない日は空欄）。CSV出力も同じ形式です。</div>
       <div class="table-scroll">
       <table>
-        <tr><th>社員CD</th><th>氏名</th><th>日付</th><th>発注金額</th></tr>
+        <tr>
+          <th>社員CD</th><th>氏名</th><th>月間発注金額</th>
+          ${periodDates.map(d=>`<th>${fmtDateShort(d)}</th>`).join("")}
+        </tr>
         ${monthlyGroups.length ? monthlyGroups.map(g=>`
-          ${g.rows.map(r=>`<tr><td>${g.code||""}</td><td>${g.name}</td><td>${fmtDateJP(r.date)}</td><td>¥${r.amount.toLocaleString()}</td></tr>`).join("")}
-          <tr class="dept-group-row"><td colspan="3">${g.name} 小計</td><td>¥${g.total.toLocaleString()}</td></tr>
-        `).join("") : `<tr><td colspan="4" class="hint">「集計する」を押してください</td></tr>`}
-        ${monthlyGroups.length ? `<tr class="total-row"><td colspan="3">合計</td><td>¥${grandTotal.toLocaleString()}</td></tr>` : ""}
+          <tr>
+            <td>${g.code||""}</td>
+            <td>${g.name}</td>
+            <td>¥${g.total.toLocaleString()}</td>
+            ${periodDates.map(d=> `<td>${g.byDate[d] ? "¥"+g.byDate[d].toLocaleString() : ""}</td>`).join("")}
+          </tr>
+        `).join("") : `<tr><td colspan="${3+periodDates.length}" class="hint">「集計する」を押してください</td></tr>`}
+        ${monthlyGroups.length ? `
+          <tr class="total-row">
+            <td colspan="2">合計</td>
+            <td>¥${grandTotal.toLocaleString()}</td>
+            ${periodDates.map(d=>{
+              const daySum = monthlyGroups.reduce((s,g)=> s + (g.byDate[d]||0), 0);
+              return `<td>${daySum ? "¥"+daySum.toLocaleString() : ""}</td>`;
+            }).join("")}
+          </tr>` : ""}
       </table>
       </div>
     </div>
@@ -1397,11 +1420,12 @@ function renderMonthlyAdmin(container){
   };
   container.querySelector("#csvMonthlyBtn").onclick = ()=>{
     if(!monthlyGroups.length) return;
-    const lines = [];
-    monthlyGroups.forEach(g=>{
-      g.rows.forEach(r=>{ lines.push(`${g.code||""},${g.name},${r.date},${r.amount}`); });
+    const header = ["社員CD","氏名","月間発注金額", ...periodDates.map(fmtDateShort)].join(",");
+    const lines = monthlyGroups.map(g=>{
+      const cells = [g.code||"", g.name, g.total, ...periodDates.map(d=> g.byDate[d] || "")];
+      return cells.join(",");
     });
-    const csv = "社員CD,氏名,日付,発注金額\n" + lines.join("\n");
+    const csv = header + "\n" + lines.join("\n");
     downloadFile(`月次発注金額集計_${monthlyYm}.csv`, csv);
   };
 }
