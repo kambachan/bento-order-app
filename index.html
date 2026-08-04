@@ -1743,7 +1743,7 @@ function renderProxyAdmin(container){
       <div class="hint">管理者が対象者になりかわって発注内容を登録・修正できます。<strong>締切後でも修正可能です</strong>（土日・祝日・発注不可日は対象外のままです）。</div>
       <label>対象者を検索（社員CD・氏名・部署・集計用部署名）</label>
       <input type="text" id="proxyEmpSearch" placeholder="例: 221323、神林、総務課" value="${proxySearchTerm}">
-      <label style="margin-top:8px;">対象者${proxySearchTerm ? `（${visibleEmployees.length}件ヒット）` : ""}</label>
+      <label style="margin-top:8px;">対象者<span id="proxyEmpCountLabel">${proxySearchTerm ? `（${visibleEmployees.length}件ヒット）` : ""}</span></label>
       <select id="proxyEmpSelect">
         ${visibleEmployees.length ? visibleEmployees.map(e=>`<option value="${e.id}" ${e.id===proxyEmployeeId?"selected":""}>${e.code||""} ${e.name}${e.dept?`（${e.dept}）`:""}</option>`).join("") : `<option value="">該当する対象者がいません</option>`}
       </select>
@@ -1806,14 +1806,17 @@ function renderProxyAdmin(container){
     </div>
   `;
 
+  // 検索欄の入力ではコンテナ全体を再描画しない（日本語入力（IME）変換中に要素が作り直されると、
+  // 「ささき」が「ｓあｓあｋい」のように文字化けする不具合が起きるため）。
+  // 代わりにプルダウンの選択肢と件数表示だけをその場で更新する。
   container.querySelector("#proxyEmpSearch").oninput = (e)=>{
     proxySearchTerm = e.target.value;
-    renderProxyAdmin(container);
-    // 再描画で失われるフォーカス・カーソル位置を検索欄に戻す
-    const searchInput = container.querySelector("#proxyEmpSearch");
-    searchInput.focus();
-    const pos = searchInput.value.length;
-    searchInput.setSelectionRange(pos, pos);
+    const filtered = employees.filter(emp=> employeeMatchesSearch(emp, proxySearchTerm) || emp.id === proxyEmployeeId);
+    const select = container.querySelector("#proxyEmpSelect");
+    select.innerHTML = filtered.length
+      ? filtered.map(emp=>`<option value="${emp.id}" ${emp.id===proxyEmployeeId?"selected":""}>${emp.code||""} ${emp.name}${emp.dept?`（${emp.dept}）`:""}</option>`).join("")
+      : `<option value="">該当する対象者がいません</option>`;
+    container.querySelector("#proxyEmpCountLabel").textContent = proxySearchTerm ? `（${filtered.length}件ヒット）` : "";
   };
   container.querySelector("#proxyEmpSelect").onchange = (e)=>{
     if(!e.target.value) return;
