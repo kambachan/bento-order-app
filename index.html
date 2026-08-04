@@ -73,6 +73,8 @@
   .fax-info-table{width:100%;border-collapse:collapse;font-size:16px;}
   .fax-info-table th{width:150px;text-align:left;background:#f5f5f5;padding:12px 14px;border:1px solid #999;}
   .fax-info-table td{padding:12px 14px;border:1px solid #999;}
+  .fax-info-table tr.fax-emphasis-row th,
+  .fax-info-table tr.fax-emphasis-row td{font-size:28px;font-weight:bold;}
   .blink-alert{
     color:#c0392b;font-weight:bold;font-size:16px;margin-top:10px;
     padding:10px 14px;border:2px solid #c0392b;border-radius:6px;background:#ffe3e3;
@@ -114,6 +116,7 @@
 
 <main id="app"></main>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script>
 /* ===================== Supabase 接続設定 ===================== */
 const SUPABASE_URL = "https://kedcbnwofumuvplqaoae.supabase.co";
@@ -412,6 +415,10 @@ function existingQtyFor(empId, dateStr){
 
 function downloadFile(filename, content){
   const blob = new Blob(["﻿"+content], {type:"text/csv;charset=utf-8"});
+  downloadBlob(filename, blob);
+}
+
+function downloadBlob(filename, blob){
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = filename;
@@ -1218,13 +1225,13 @@ function printAllFaxSheets(dateStr, rowsForDate){
           <div class="fax-title-line">発注書</div>
         </div>
         <table class="fax-info-table">
-          <tr><th>会社名</th><td>${FAX_SENDER_INFO.company}</td></tr>
+          <tr class="fax-emphasis-row"><th>会社名</th><td>${FAX_SENDER_INFO.company}</td></tr>
           <tr><th>部署名</th><td>${FAX_SENDER_INFO.dept}</td></tr>
           <tr><th>担当者</th><td>${FAX_SENDER_INFO.contact}</td></tr>
           <tr><th>電話番号</th><td>${FAX_SENDER_INFO.tel}</td></tr>
           <tr><th>FAX番号</th><td>${FAX_SENDER_INFO.fax}</td></tr>
           <tr><th>注文日</th><td>${fmtDateJP(dateStr)}</td></tr>
-          <tr><th>注文数量</th><td>${qty} 個</td></tr>
+          <tr class="fax-emphasis-row"><th>注文数量</th><td>${qty} 個</td></tr>
         </table>
       </div>
     </div>`;
@@ -1389,7 +1396,7 @@ function renderReceiptAdmin(container){
   container.querySelector("#printReceiptBtn").onclick = ()=> window.print();
 }
 
-/* --- 月次集計（16日〜15日の発注月度でCSV出力。日付ごとの発注金額が分かる明細形式） --- */
+/* --- 月次集計（16日〜15日の発注月度でExcel出力。日付ごとの発注金額・数量が分かる明細形式＋部署別集計） --- */
 let monthlyYm = periodLabelFor(todayStr());
 let monthlyGroups = []; // 集計後: [{code, name, total, byDate: {date: amount}}]
 
@@ -1400,25 +1407,40 @@ function fmtDateShort(dateStr){
 }
 
 // 期間内の生の発注データ（社員別・個人単価反映済みのamountを含む）を社員ごとにグループ化し、
-// 日付ごとの金額を横持ち（列）で参照できる形にする（A:社員CD B:氏名 C:月間発注金額 D列以降:日付別金額）
+// 日付ごとの金額を横持ち（列）で参照できる形にする（A:社員CD B:氏名 C:月間数量 D:月間発注金額 E列以降:日付別金額）
 function aggregateOrdersByEmployeeDate(rawRows){
   const map = new Map();
   rawRows.forEach(r=>{
-    if(!map.has(r.employee_id)) map.set(r.employee_id, { code: r.code, name: r.name, total: 0, byDate: {} });
+    if(!map.has(r.employee_id)) map.set(r.employee_id, { code: r.code, name: r.name, dept: r.dept||"", total: 0, totalQty: 0, byDate: {} });
     const g = map.get(r.employee_id);
     g.byDate[r.date] = (g.byDate[r.date] || 0) + (r.amount || 0);
     g.total += (r.amount || 0);
+    g.totalQty += (r.qty || 1);
   });
   const groups = [...map.values()];
   groups.sort((a,b)=> (a.code||"").localeCompare(b.code||"", "ja", {numeric:true}));
   return groups;
 }
 
+// 社員別集計を部署ごとにまとめ、部署単位の月間合計数量・合計金額を算出する
+function aggregateDeptTotals(groups){
+  const map = new Map();
+  groups.forEach(g=>{
+    const key = g.dept || "(所属未設定)";
+    if(!map.has(key)) map.set(key, { dept: key, totalQty: 0, totalAmount: 0 });
+    const d = map.get(key);
+    d.totalQty += g.totalQty;
+    d.totalAmount += g.total;
+  });
+  return [...map.values()].sort((a,b)=> a.dept.localeCompare(b.dept, "ja"));
+}
+
 function renderMonthlyAdmin(container){
   const {start, end} = periodRange(monthlyYm);
   const [, m] = monthlyYm.split("-");
-  const periodDates = datesInPeriod(monthlyYm);
   const grandTotal = monthlyGroups.reduce((s,g)=> s + g.total, 0);
+  const grandTotalQty = monthlyGroups.reduce((s,g)=> s + g.totalQty, 0);
+  const deptTotals = aggregateDeptTotals(monthlyGroups);
 
   container.innerHTML = `
     <div class="card no-print">
@@ -1429,35 +1451,48 @@ function renderMonthlyAdmin(container){
     </div>
     <div class="card">
       <h2>${Number(m)}月度 発注金額集計（${fmtDateJP(start)}〜${fmtDateJP(end)}）</h2>
-      <div class="hint">社員CD・氏名・月間発注金額に続けて、日付ごとの発注金額を横並びで表示します（発注がない日は空欄）。CSV出力も同じ形式です。</div>
+      <div class="hint">社員CD・氏名・月間数量・月間発注金額を表示します。Excel出力も同じ形式で、部署別の月間合計数量・金額も併せて出力します。</div>
       <div class="table-scroll">
       <table class="monthly-table">
         <tr>
-          <th>社員CD</th><th>氏名</th><th>月間発注金額</th>
-          ${periodDates.map(d=>`<th>${fmtDateShort(d)}</th>`).join("")}
+          <th>社員CD</th><th>氏名</th><th>月間数量</th><th>月間発注金額</th>
         </tr>
         ${monthlyGroups.length ? monthlyGroups.map(g=>`
           <tr>
             <td>${g.code||""}</td>
             <td>${g.name}</td>
+            <td>${g.totalQty}</td>
             <td>¥${g.total.toLocaleString()}</td>
-            ${periodDates.map(d=> `<td>${g.byDate[d] ? "¥"+g.byDate[d].toLocaleString() : ""}</td>`).join("")}
           </tr>
-        `).join("") : `<tr><td colspan="${3+periodDates.length}" class="hint">「集計する」を押してください</td></tr>`}
+        `).join("") : `<tr><td colspan="4" class="hint">「集計する」を押してください</td></tr>`}
         ${monthlyGroups.length ? `
           <tr class="total-row">
             <td colspan="2">合計</td>
+            <td>${grandTotalQty}</td>
             <td>¥${grandTotal.toLocaleString()}</td>
-            ${periodDates.map(d=>{
-              const daySum = monthlyGroups.reduce((s,g)=> s + (g.byDate[d]||0), 0);
-              return `<td>${daySum ? "¥"+daySum.toLocaleString() : ""}</td>`;
-            }).join("")}
           </tr>` : ""}
       </table>
       </div>
+      ${monthlyGroups.length ? `
+      <h2 style="margin-top:30px;">部署別 月間合計数量・金額</h2>
+      <table class="monthly-table">
+        <tr><th>部署</th><th>月間合計数量</th><th>月間合計金額</th></tr>
+        ${deptTotals.map(d=>`
+          <tr>
+            <td>${d.dept}</td>
+            <td>${d.totalQty}</td>
+            <td>¥${d.totalAmount.toLocaleString()}</td>
+          </tr>
+        `).join("")}
+        <tr class="total-row">
+          <td>合計</td>
+          <td>${grandTotalQty}</td>
+          <td>¥${grandTotal.toLocaleString()}</td>
+        </tr>
+      </table>` : ""}
     </div>
     <div class="no-print" style="margin-top:10px;">
-      <button class="secondary" id="csvMonthlyBtn" ${monthlyGroups.length ? "" : "disabled"}>CSV出力</button>
+      <button class="secondary" id="excelMonthlyBtn" ${monthlyGroups.length ? "" : "disabled"}>Excel出力</button>
     </div>
   `;
   container.querySelector("#monthlyYmInput").onchange = (e)=>{
@@ -1472,16 +1507,76 @@ function renderMonthlyAdmin(container){
       monthlyGroups = aggregateOrdersByEmployeeDate(raw);
     });
   };
-  container.querySelector("#csvMonthlyBtn").onclick = ()=>{
+  container.querySelector("#excelMonthlyBtn").onclick = async ()=>{
     if(!monthlyGroups.length) return;
-    const header = ["社員CD","氏名","月間発注金額", ...periodDates.map(fmtDateShort)].join(",");
-    const lines = monthlyGroups.map(g=>{
-      const cells = [g.code||"", g.name, g.total, ...periodDates.map(d=> g.byDate[d] || "")];
-      return cells.join(",");
-    });
-    const csv = header + "\n" + lines.join("\n");
-    downloadFile(`月次発注金額集計_${monthlyYm}.csv`, csv);
+    await exportMonthlyExcel({ monthlyYm, monthlyGroups, deptTotals, grandTotal, grandTotalQty });
   };
+}
+
+// 月次集計をA4横向き・表形式のExcelファイル(.xlsx)として出力する（社員別内訳＋部署別集計を1シートにまとめる）
+async function exportMonthlyExcel({ monthlyYm, monthlyGroups, deptTotals, grandTotal, grandTotalQty }){
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("月次集計", {
+    pageSetup: { paperSize: 9, orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: {left:0.5,right:0.5,top:0.5,bottom:0.5,header:0.2,footer:0.2} }
+  });
+
+  const headerRow1 = ["社員CD","氏名","月間数量","月間発注金額"];
+  const styleHeaderRow = (row)=>{
+    row.eachCell(cell=>{
+      cell.font = { bold:true };
+      cell.alignment = { horizontal:"center", vertical:"middle" };
+      cell.fill = { type:"pattern", pattern:"solid", fgColor:{argb:"FFEFEFEF"} };
+      cell.border = { top:{style:"thin"}, left:{style:"thin"}, bottom:{style:"thin"}, right:{style:"thin"} };
+    });
+  };
+  const styleDataRow = (row, boldTotal)=>{
+    row.eachCell(cell=>{
+      cell.border = { top:{style:"thin"}, left:{style:"thin"}, bottom:{style:"thin"}, right:{style:"thin"} };
+      if(boldTotal) cell.font = { bold:true };
+    });
+  };
+
+  const h1 = ws.addRow(headerRow1);
+  styleHeaderRow(h1);
+
+  monthlyGroups.forEach(g=>{
+    const row = ws.addRow([g.code||"", g.name, g.totalQty, g.total]);
+    styleDataRow(row, false);
+  });
+
+  const totalRow = ws.addRow(["合計","", grandTotalQty, grandTotal]);
+  ws.mergeCells(totalRow.number, 1, totalRow.number, 2);
+  styleDataRow(totalRow, true);
+
+  // 3行あける
+  ws.addRow([]); ws.addRow([]); ws.addRow([]);
+
+  const deptTitleRow = ws.addRow(["部署別 月間合計数量・金額"]);
+  ws.mergeCells(deptTitleRow.number, 1, deptTitleRow.number, 3);
+  deptTitleRow.font = { bold:true, size:13 };
+
+  const deptHeaderRow = ws.addRow(["部署","月間合計数量","月間合計金額"]);
+  styleHeaderRow(deptHeaderRow);
+
+  deptTotals.forEach(d=>{
+    const row = ws.addRow([d.dept, d.totalQty, d.totalAmount]);
+    styleDataRow(row, false);
+  });
+  const deptTotalRow = ws.addRow(["合計", grandTotalQty, grandTotal]);
+  styleDataRow(deptTotalRow, true);
+
+  // 金額列に通貨書式を設定
+  ws.getColumn(4).numFmt = "¥#,##0";
+
+  // 列幅を見やすく調整
+  ws.getColumn(1).width = 12;
+  ws.getColumn(2).width = 16;
+  ws.getColumn(3).width = 10;
+  ws.getColumn(4).width = 14;
+
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  downloadBlob(`月次発注金額集計_${monthlyYm}.xlsx`, blob);
 }
 
 /* --- 代理発注（管理者権限：社員になりかわって発注登録・修正。締切後でも修正可能） --- */
