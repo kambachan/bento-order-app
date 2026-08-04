@@ -494,7 +494,7 @@ function renderOrderTab(){
   }, 0);
 
   app.innerHTML = `
-    <div class="card">
+    <div class="card no-print">
       <div class="row" style="align-items:center;">
         <div>
           <div class="hint" style="margin:0;">ログイン中</div>
@@ -778,7 +778,7 @@ function renderAdminTab(){
   }
 
   app.innerHTML = `
-    <div class="card">
+    <div class="card no-print">
       <div class="row" style="align-items:center;">
         <div>
           <div class="hint" style="margin:0;">ログイン中（管理者）</div>
@@ -787,7 +787,7 @@ function renderAdminTab(){
         <button class="secondary" id="adminLogoutBtn" style="flex:0 0 auto;">ログアウト</button>
       </div>
     </div>
-    <div class="subtabs" id="adminSubtabs">
+    <div class="subtabs no-print" id="adminSubtabs">
       <button data-sub="employees">対象者リスト</button>
       <button data-sub="menu">メニュー管理</button>
       <button data-sub="deadline">締切設定</button>
