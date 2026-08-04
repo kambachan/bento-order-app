@@ -538,7 +538,7 @@ function renderOrderTab(){
                 <input type="checkbox" class="calCheckbox" data-date="${d}" data-menu="${m.id}" ${existing===m.id?"checked":""}>
               </td>`).join("")}
             <td class="checkbox-col" style="width:56px;">
-              <input type="number" class="calQtyInput" data-date="${d}" min="1" value="${existingQty}" style="width:52px;padding:4px;">
+              <input type="number" class="calQtyInput" data-date="${d}" min="1" value="${existing ? existingQty : ""}" style="width:52px;padding:4px;">
             </td>
           </tr>`;
         }).join("")}
@@ -582,13 +582,19 @@ function renderOrderTab(){
     }
   }
 
-  // 同じ日で他のメニューにチェックが入ったら、その日の他のチェックボックスは自動的に外す（1日1食）
+  // 同じ日で他のメニューにチェックが入ったら、その日の他のチェックボックスは自動的に外す（1日1食）。
+  // また、チェックを入れた際は数量に1を初期値として入れ、その日のチェックが全て外れたら数量を空欄に戻す。
   document.querySelectorAll(".calCheckbox").forEach(cb=>{
     cb.onchange = ()=>{
+      const qtyInput = document.querySelector(`.calQtyInput[data-date="${cb.dataset.date}"]`);
       if(cb.checked){
         document.querySelectorAll(`.calCheckbox[data-date="${cb.dataset.date}"]`).forEach(other=>{
           if(other !== cb) other.checked = false;
         });
+        if(qtyInput && !qtyInput.value) qtyInput.value = "1";
+      } else {
+        const stillChecked = document.querySelector(`.calCheckbox[data-date="${cb.dataset.date}"]:checked`);
+        if(!stillChecked && qtyInput) qtyInput.value = "";
       }
     };
   });
