@@ -831,7 +831,7 @@ function renderEmployeesAdmin(container){
     </div>
     <div class="card">
       <h2>CSV一括取込・出力</h2>
-      <div class="hint">CSV形式: 社員CD,氏名,部署,組織コード,区分（employee/executive/dispatch。1行目はヘッダーでも可）。CSV取込では管理者権限は付与されません（一覧から個別に設定してください）。</div>
+      <div class="hint">CSV形式: 社員CD,氏名,部署,組織コード,区分（employee/executive/dispatch。1行目はヘッダーでも可）。社員CDが既に登録されている場合は、氏名・部署などの情報を上書き更新します（新規の社員CDのみ新規登録）。CSV取込で管理者権限が変わることはありません（一覧から個別に設定してください）。</div>
       <input type="file" id="csvInput" accept=".csv" style="margin-top:8px;">
       <div class="row" style="margin-top:10px;">
         <button class="secondary" id="csvExportBtn">CSVで出力</button>
@@ -961,23 +961,41 @@ function renderEmployeesAdmin(container){
     reader.onload = ()=>{
       const lines = reader.result.split(/\r?\n/).map(l=>l.trim()).filter(l=>l);
       withLoading(async ()=>{
-        let added = 0, skipped = 0;
+        let added = 0, updated = 0, skipped = 0;
         for(const line of lines){
           const parts = line.split(",").map(p=>p.trim());
           if(parts[0] === "社員CD" || parts[0] === "氏名" || parts[0] === "code") continue;
           const [code, name, dept, orgCode, typeRaw] = parts;
           if(!code || !name) continue;
-          let employeeType = "employee";
-          if(typeRaw === "executive" || typeRaw === "役員") employeeType = "executive";
-          else if(typeRaw === "dispatch" || typeRaw === "派遣") employeeType = "dispatch";
+          // 社員CDが既存の対象者と一致する場合は、その対象者を上書き更新する（新規登録ではなく更新扱い）
+          const existing = state.employees.find(x=>x.code===code);
+          // CSVに組織コード・区分の列が無い場合は、既存の値を保持する（誤って空欄で上書きしないため）
+          const finalOrgCode = parts.length >= 4 ? (orgCode||"") : (existing ? (existing.orgCode||"") : "");
+          let employeeType;
+          if(parts.length >= 5){
+            employeeType = "employee";
+            if(typeRaw === "executive" || typeRaw === "役員") employeeType = "executive";
+            else if(typeRaw === "dispatch" || typeRaw === "派遣") employeeType = "dispatch";
+          } else {
+            employeeType = existing ? existing.employeeType : "employee";
+          }
           try{
-            await sbRpc("rpc_admin_upsert_employee", {p_token: session.token, p_id: null, p_code: code, p_name: name, p_dept: dept||"", p_is_admin: false, p_org_code: orgCode||"", p_employee_type: employeeType});
-            added++;
+            await sbRpc("rpc_admin_upsert_employee", {
+              p_token: session.token,
+              p_id: existing ? existing.id : null,
+              p_code: code,
+              p_name: name,
+              p_dept: dept||"",
+              p_is_admin: existing ? existing.isAdmin : false,
+              p_org_code: finalOrgCode,
+              p_employee_type: employeeType
+            });
+            if(existing) updated++; else added++;
           }catch(err){ skipped++; }
         }
         const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
         state.employees = rows.map(mapEmployee);
-        alert(`${added}件を取り込みました${skipped ? `（重複社員CD等 ${skipped}件はスキップ）` : ""}`);
+        alert(`${added}件を新規追加、${updated}件を更新しました${skipped ? `（${skipped}件は失敗しました）` : ""}`);
       });
     };
     reader.readAsText(file, "UTF-8");
