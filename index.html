@@ -282,6 +282,17 @@ async function loadMyOrdersForMonth(periodYm){
   });
 }
 
+// 管理者による代理発注用: 指定した社員の、指定した発注月度の発注情報を取得する（同じstate.ordersキャッシュに格納する）
+async function loadProxyOrdersForPeriod(employeeId, periodYm){
+  const {start, end} = periodRange(periodYm);
+  const rows = await sbRpc("rpc_admin_get_orders_for_employee", {p_token: session.token, p_employee_id: employeeId, p_start_date: start, p_end_date: end});
+  datesInPeriod(periodYm).forEach(d=>{ if(state.orders[d]) delete state.orders[d][employeeId]; });
+  rows.forEach(r=>{
+    if(!state.orders[r.date]) state.orders[r.date] = {};
+    state.orders[r.date][employeeId] = { menuId: r.menu_id, qty: r.qty || 1 };
+  });
+}
+
 /* ===================== ユーティリティ ===================== */
 function dayOfWeek(dateStr){
   return new Date(dateStr+"T00:00:00").getDay(); // 0:日 ... 6:土
@@ -534,7 +545,7 @@ function renderOrderTab(){
             </tr>`;
           }
           if(locked){
-            return `<tr class="${todayCls.trim()}"${rowIdAttr}>
+            return `<tr class="row-holiday${todayCls}"${rowIdAttr}>
               <td>${fmtDateJP(d)}${todayMark}</td>
               <td><span style="color:var(--lock);">締切済み</span></td>
               <td colspan="${state.menu.length+1}">${existingLabel ? existingLabel : "（発注なし）"}</td>
@@ -704,6 +715,13 @@ async function loadAdminSubData(sub){
     summaryRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: summaryDate});
   } else if(sub === "receipt"){
     receiptRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: receiptDate});
+  } else if(sub === "proxy"){
+    if(!state.employees.length){
+      const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
+      state.employees = rows.map(mapEmployee);
+    }
+    if(!proxyEmployeeId && state.employees.length) proxyEmployeeId = state.employees[0].id;
+    if(proxyEmployeeId) await loadProxyOrdersForPeriod(proxyEmployeeId, proxyYm);
   }
   // deadline / monthly サブタブは既にグローバルで読み込み済みのデータ、または操作時に都度取得するデータを使う
 }
@@ -774,6 +792,7 @@ function renderAdminTab(){
       <button data-sub="summary">発注集計・発注書</button>
       <button data-sub="receipt">受取確認リスト</button>
       <button data-sub="monthly">月次集計</button>
+      <button data-sub="proxy">代理発注</button>
     </div>
     <div id="adminContent"></div>
   `;
@@ -794,6 +813,7 @@ function renderAdminTab(){
   else if(currentAdminSub==="summary") renderSummaryAdmin(content);
   else if(currentAdminSub==="receipt") renderReceiptAdmin(content);
   else if(currentAdminSub==="monthly") renderMonthlyAdmin(content);
+  else if(currentAdminSub==="proxy") renderProxyAdmin(content);
 }
 
 /* --- 対象者リスト管理 --- */
@@ -1456,6 +1476,184 @@ function renderMonthlyAdmin(container){
     const csv = header + "\n" + lines.join("\n");
     downloadFile(`月次発注金額集計_${monthlyYm}.csv`, csv);
   };
+}
+
+/* --- 代理発注（管理者権限：社員になりかわって発注登録・修正。締切後でも修正可能） --- */
+let proxyEmployeeId = "";
+let proxyYm = periodLabelFor(todayStr());
+let proxyMessage = "";
+
+function renderProxyAdmin(container){
+  const employees = [...state.employees].sort((a,b)=> (a.code||"").localeCompare(b.code||"", "ja", {numeric:true}));
+  if(!proxyEmployeeId && employees.length) proxyEmployeeId = employees[0].id;
+  const targetEmp = employees.find(e=>e.id===proxyEmployeeId);
+
+  const dates = datesInPeriod(proxyYm);
+  const {start: periodStart, end: periodEnd} = periodRange(proxyYm);
+  const [ymYear, ymMonth] = proxyYm.split("-");
+
+  function priceForTarget(m){
+    if(!targetEmp) return m.priceEmployee||0;
+    if(targetEmp.employeeType === "executive") return m.priceExecutive||0;
+    if(targetEmp.employeeType === "dispatch") return m.priceDispatch||0;
+    return m.priceEmployee||0;
+  }
+
+  container.innerHTML = `
+    <div class="card">
+      <h2>代理発注（管理者用）</h2>
+      <div class="hint">管理者が対象者になりかわって発注内容を登録・修正できます。<strong>締切後でも修正可能です</strong>（土日・祝日・発注不可日は対象外のままです）。</div>
+      <label>対象者</label>
+      <select id="proxyEmpSelect">
+        ${employees.map(e=>`<option value="${e.id}" ${e.id===proxyEmployeeId?"selected":""}>${e.code||""} ${e.name}${e.dept?`（${e.dept}）`:""}</option>`).join("")}
+      </select>
+    </div>
+    <div class="card no-print">
+      <h2>対象月度</h2>
+      <div class="row" style="align-items:center;">
+        <button class="secondary" id="proxyPrevBtn" style="flex:0 0 auto;">← 前月度</button>
+        <input type="month" id="proxyMonthSelect" value="${proxyYm}">
+        <button class="secondary" id="proxyNextBtn" style="flex:0 0 auto;">次月度 →</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>${ymYear}年${Number(ymMonth)}月度（${fmtDateJP(periodStart)}〜${fmtDateJP(periodEnd)}）${targetEmp ? ` — ${targetEmp.name}` : ""}</h2>
+      <div class="table-scroll">
+      <table>
+        <tr>
+          <th>日付</th><th>状態</th>
+          ${state.menu.map(m=>`<th>${m.name}<br><span class="hint" style="margin:0;">¥${priceForTarget(m)}</span></th>`).join("")}
+          <th>数量</th>
+        </tr>
+        ${dates.map(d=>{
+          const holiday = holidayName(d);
+          const blockedDate = isBlockedDate(d);
+          const blockedWd = isBlockedWeekday(d);
+          const nonOrderable = blockedDate || blockedWd || !!holiday;
+          const existing = proxyEmployeeId ? existingMenuFor(proxyEmployeeId, d) : null;
+          const existingQty = proxyEmployeeId ? existingQtyFor(proxyEmployeeId, d) : 1;
+          const existingMenuName = existing ? (state.menu.find(m=>m.id===existing)?.name || "―") : null;
+          const existingLabel = existingMenuName ? (existingQty > 1 ? `${existingMenuName} ×${existingQty}` : existingMenuName) : null;
+          const isToday = d === todayStr();
+          const todayCls = isToday ? " row-today" : "";
+          const todayMark = isToday ? ` <span class="today-badge">本日</span>` : "";
+          if(nonOrderable){
+            const label = holiday ? holiday : (blockedWd ? `${WEEKDAY_LABELS[dayOfWeek(d)]}曜休配` : "発注不可日");
+            return `<tr class="row-holiday${todayCls}">
+              <td>${fmtDateJP(d)}${todayMark}</td>
+              <td><span style="color:var(--sub);">休（${label}）</span></td>
+              <td colspan="${state.menu.length+1}">${existingLabel ? existingLabel : "発注不可"}</td>
+            </tr>`;
+          }
+          const lockedNote = isLocked(d) ? ` <span class="hint" style="margin:0;color:var(--lock);">(通常締切後)</span>` : "";
+          return `<tr class="${todayCls.trim()}">
+            <td>${fmtDateJP(d)}${todayMark}</td>
+            <td><span style="color:var(--ok);">修正可</span>${lockedNote}</td>
+            ${state.menu.map(m=>`
+              <td class="checkbox-col" style="width:auto;text-align:center;">
+                <input type="checkbox" class="proxyCheckbox" data-date="${d}" data-menu="${m.id}" ${existing===m.id?"checked":""}>
+              </td>`).join("")}
+            <td class="checkbox-col" style="width:56px;">
+              <input type="number" class="proxyQtyInput" data-date="${d}" min="1" value="${existing ? existingQty : ""}" style="width:52px;padding:4px;">
+            </td>
+          </tr>`;
+        }).join("")}
+      </table>
+      </div>
+      <div class="hint">「(通常締切後)」と表示されている日付も、この画面からは登録・修正・取消ができます。</div>
+      <button class="primary" id="proxyUpdateBtn">まとめて更新する</button>
+      ${proxyMessage ? `<div class="status-box status-ok">${proxyMessage}</div>` : ""}
+    </div>
+  `;
+
+  container.querySelector("#proxyEmpSelect").onchange = (e)=>{
+    proxyEmployeeId = e.target.value;
+    proxyMessage = "";
+    withLoading(()=> loadProxyOrdersForPeriod(proxyEmployeeId, proxyYm));
+  };
+  container.querySelector("#proxyMonthSelect").onchange = (e)=>{
+    if(e.target.value) proxyYm = e.target.value;
+    proxyMessage = "";
+    withLoading(()=> loadProxyOrdersForPeriod(proxyEmployeeId, proxyYm));
+  };
+  container.querySelector("#proxyPrevBtn").onclick = ()=>{
+    proxyYm = shiftMonth(proxyYm, -1);
+    proxyMessage = "";
+    withLoading(()=> loadProxyOrdersForPeriod(proxyEmployeeId, proxyYm));
+  };
+  container.querySelector("#proxyNextBtn").onclick = ()=>{
+    proxyYm = shiftMonth(proxyYm, 1);
+    proxyMessage = "";
+    withLoading(()=> loadProxyOrdersForPeriod(proxyEmployeeId, proxyYm));
+  };
+
+  // 同じ日で他のメニューにチェックが入ったら自動的に他を外す。チェックを入れたら数量に1を初期値として入れ、
+  // その日のチェックが全て外れたら数量を空欄に戻す（発注タブと同じ挙動）。
+  container.querySelectorAll(".proxyCheckbox").forEach(cb=>{
+    cb.onchange = ()=>{
+      const qtyInput = container.querySelector(`.proxyQtyInput[data-date="${cb.dataset.date}"]`);
+      if(cb.checked){
+        container.querySelectorAll(`.proxyCheckbox[data-date="${cb.dataset.date}"]`).forEach(other=>{
+          if(other !== cb) other.checked = false;
+        });
+        if(qtyInput && !qtyInput.value) qtyInput.value = "1";
+      } else {
+        const stillChecked = container.querySelector(`.proxyCheckbox[data-date="${cb.dataset.date}"]:checked`);
+        if(!stillChecked && qtyInput) qtyInput.value = "";
+      }
+    };
+  });
+
+  container.querySelector("#proxyUpdateBtn").onclick = ()=>{
+    const empId = proxyEmployeeId;
+    const changes = collectProxyOrderChanges(empId, proxyYm); // DOMが生きているうちに同期的に取得
+    withLoading(()=> placeProxyBatchOrders(empId, changes));
+  };
+}
+
+// 代理発注画面のチェックボックスの状態から変更点を集める（締切は無視するが、休配日・発注不可日は対象外）
+function collectProxyOrderChanges(employeeId, periodYm){
+  const changes = [];
+  datesInPeriod(periodYm).forEach(d=>{
+    if(isNonOrderableDay(d)) return;
+    const checked = document.querySelector(`.proxyCheckbox[data-date="${d}"]:checked`);
+    const menuId = checked ? checked.dataset.menu : null;
+    const qtyInput = document.querySelector(`.proxyQtyInput[data-date="${d}"]`);
+    const qty = Math.max(1, parseInt(qtyInput && qtyInput.value, 10) || 1);
+    const existing = existingMenuFor(employeeId, d);
+    const existingQty = existingQtyFor(employeeId, d);
+    if(menuId){
+      if(existing !== menuId || existingQty !== qty) changes.push({date:d, action:"place", menuId, qty});
+    } else if(existing){
+      changes.push({date:d, action:"cancel"});
+    }
+  });
+  return changes;
+}
+
+async function placeProxyBatchOrders(employeeId, changes){
+  let ordered = 0, cancelled = 0, failed = 0;
+  for(const c of changes){
+    try{
+      if(c.action === "place"){
+        await sbRpc("rpc_admin_place_order_for", {p_token: session.token, p_employee_id: employeeId, p_date: c.date, p_menu_id: c.menuId, p_qty: c.qty || 1});
+        if(!state.orders[c.date]) state.orders[c.date] = {};
+        state.orders[c.date][employeeId] = { menuId: c.menuId, qty: c.qty || 1 };
+        ordered++;
+      } else {
+        await sbRpc("rpc_admin_cancel_order_for", {p_token: session.token, p_employee_id: employeeId, p_date: c.date});
+        if(state.orders[c.date]) delete state.orders[c.date][employeeId];
+        cancelled++;
+      }
+    }catch(e){
+      failed++;
+    }
+  }
+  const parts = [];
+  if(ordered) parts.push(`${ordered}件を登録・修正しました`);
+  if(cancelled) parts.push(`${cancelled}件を取り消しました`);
+  if(failed) parts.push(`${failed}件は失敗しました`);
+  proxyMessage = parts.length ? parts.join(" / ") : "変更はありませんでした";
 }
 
 /* ===================== 時計 ===================== */
