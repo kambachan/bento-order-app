@@ -93,6 +93,8 @@
     body.printing-fax #faxSheetHolder{display:block;}
     .receipt-page{ page-break-after: always; }
     .receipt-page:last-child{ page-break-after: auto; }
+    .fax-page{ page-break-after: always; }
+    .fax-page:last-child{ page-break-after: auto; }
   }
 </style>
 </head>
@@ -1195,25 +1197,30 @@ const FAX_SENDER_INFO = {
   fax: "03-3287-3614"
 };
 
-// 指定メニューのFAX送付状（A4縦）だけを印刷する。他の画面内容は印刷時に非表示にする。
-function printFaxSheet(menuId, dateStr, rowsForDate){
-  const menu = (state.menu||[]).find(m=>m.id===menuId) || (state.adminMenu||[]).find(m=>m.id===menuId);
-  if(!menu){ alert("メニューを選択してください"); return; }
-  const qty = rowsForDate.filter(r=>r.menu_id===menuId).reduce((s,r)=> s + (r.qty||1), 0);
-  const html = `
-    <div class="fax-sheet">
-      <h1>FAX送付状</h1>
-      <div class="fax-menu-name">${menu.name}</div>
-      <table class="fax-info-table">
-        <tr><th>会社名</th><td>${FAX_SENDER_INFO.company}</td></tr>
-        <tr><th>部署名</th><td>${FAX_SENDER_INFO.dept}</td></tr>
-        <tr><th>担当者</th><td>${FAX_SENDER_INFO.contact}</td></tr>
-        <tr><th>電話番号</th><td>${FAX_SENDER_INFO.tel}</td></tr>
-        <tr><th>FAX番号</th><td>${FAX_SENDER_INFO.fax}</td></tr>
-        <tr><th>注文日</th><td>${fmtDateJP(dateStr)}</td></tr>
-        <tr><th>注文数量</th><td>${qty} 個</td></tr>
-      </table>
+// 指定日に発注があった全メニュー分のFAX送付状（A4縦・1メニュー1ページ）をまとめて印刷する。
+// 他の画面内容は印刷時に非表示にする。
+function printAllFaxSheets(dateStr, rowsForDate){
+  const menusWithOrders = (state.menu||[]).filter(m=> rowsForDate.some(r=>r.menu_id===m.id));
+  if(!menusWithOrders.length){ alert("この日は発注がありません"); return; }
+  const html = menusWithOrders.map(menu=>{
+    const qty = rowsForDate.filter(r=>r.menu_id===menu.id).reduce((s,r)=> s + (r.qty||1), 0);
+    return `
+    <div class="fax-page">
+      <div class="fax-sheet">
+        <h1>FAX送付状</h1>
+        <div class="fax-menu-name">${menu.name}</div>
+        <table class="fax-info-table">
+          <tr><th>会社名</th><td>${FAX_SENDER_INFO.company}</td></tr>
+          <tr><th>部署名</th><td>${FAX_SENDER_INFO.dept}</td></tr>
+          <tr><th>担当者</th><td>${FAX_SENDER_INFO.contact}</td></tr>
+          <tr><th>電話番号</th><td>${FAX_SENDER_INFO.tel}</td></tr>
+          <tr><th>FAX番号</th><td>${FAX_SENDER_INFO.fax}</td></tr>
+          <tr><th>注文日</th><td>${fmtDateJP(dateStr)}</td></tr>
+          <tr><th>注文数量</th><td>${qty} 個</td></tr>
+        </table>
+      </div>
     </div>`;
+  }).join("");
   let holder = document.getElementById("faxSheetHolder");
   if(!holder){
     holder = document.createElement("div");
@@ -1286,14 +1293,8 @@ function renderSummaryAdmin(container){
     </div>
     <div class="card no-print">
       <h2>FAX送付状</h2>
-      <div class="hint">「印刷」を押すと、送付するメニューを選んだうえでFAX送付状（会社名・部署名・担当者・電話番号・FAX番号・注文日・注文数量を記載したA4縦1枚）のみを印刷できます。</div>
+      <div class="hint">「印刷」を押すと、この日に発注があったメニューごとに自動でページを分けて、FAX送付状（会社名・部署名・担当者・電話番号・FAX番号・注文日・注文数量を記載したA4縦1枚）を一括印刷します。</div>
       <div class="row" style="margin-top:8px;">
-        <select id="faxMenuSelect">
-          ${state.menu.map(m=>{
-            const t = qtyByMenuType[m.id] || { employee:0, executive:0, dispatch:0 };
-            return `<option value="${m.id}">${m.name}（${t.employee+t.executive+t.dispatch}個）</option>`;
-          }).join("")}
-        </select>
         <button class="primary" id="printFaxBtn" style="flex:0 0 auto;">印刷</button>
       </div>
     </div>
@@ -1307,8 +1308,7 @@ function renderSummaryAdmin(container){
     withLoading(async ()=>{ summaryRows = await sbRpc("rpc_admin_orders_for_date", {p_token: session.token, p_date: summaryDate}); });
   };
   container.querySelector("#printFaxBtn").onclick = ()=>{
-    const menuId = container.querySelector("#faxMenuSelect").value;
-    printFaxSheet(menuId, summaryDate, rows);
+    printAllFaxSheets(summaryDate, rows);
   };
   container.querySelector("#printSummaryBtn").onclick = ()=> window.print();
   container.querySelector("#csvSummaryBtn").onclick = ()=>{
