@@ -495,7 +495,6 @@ function renderOrderTab(){
   const dates = datesInPeriod(calendarYearMonth);
   const {start: periodStart, end: periodEnd} = periodRange(calendarYearMonth);
   const [ymYear, ymMonth] = calendarYearMonth.split("-");
-  const roleLabel = employeeTypeLabel(session.employeeType);
 
   const orderedDates = dates.filter(d=> existingMenuFor(session.employeeId, d));
   const monthlyTotalAmount = orderedDates.reduce((sum, d)=>{
@@ -510,7 +509,7 @@ function renderOrderTab(){
       <div class="row" style="align-items:center;">
         <div>
           <div class="hint" style="margin:0;">ログイン中</div>
-          <div style="font-size:16px;font-weight:bold;">${session.name}（${session.dept} / 社員CD: ${session.code||"―"} / ${roleLabel}）</div>
+          <div style="font-size:16px;font-weight:bold;">${session.name}（${session.dept}）</div>
         </div>
         <button class="secondary" id="logoutBtn" style="flex:0 0 auto;">ログアウト（別の人が使う）</button>
       </div>
@@ -578,7 +577,7 @@ function renderOrderTab(){
         }).join("")}
       </table>
       </div>
-      <div class="hint">1日につき1つのメニューにチェックしてください（別のメニューにチェックすると自動的に切り替わります）。取り消す場合はチェックを外してください。「数量」は通常1のままで構いません。まれに複数個発注したい場合のみ変更してください。</div>
+      <div class="hint">1日につき1つのメニューにチェックしてください（別のメニューにチェックすると自動的に切り替わります）。<br>取り消す場合はチェックを外してください。数量は自動で0になります。<br>「数量」は通常1のままで構いません。複数個発注したい場合のみ変更してください。</div>
       <button class="primary" id="batchOrderBtn">発注</button>
       ${batchMessage ? `<div class="status-box status-ok">${batchMessage}</div>` : ""}
     </div>
@@ -796,7 +795,7 @@ function renderAdminTab(){
       <div class="row" style="align-items:center;">
         <div>
           <div class="hint" style="margin:0;">ログイン中（管理者）</div>
-          <div style="font-size:16px;font-weight:bold;">${session.name}（社員CD: ${session.code}）</div>
+          <div style="font-size:16px;font-weight:bold;">${session.name}（${session.dept}）</div>
         </div>
         <button class="secondary" id="adminLogoutBtn" style="flex:0 0 auto;">ログアウト</button>
       </div>
