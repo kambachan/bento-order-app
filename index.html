@@ -282,7 +282,7 @@ async function saveSettingsPartial(overrides){
   state.blockedWeekdays = updated.blocked_weekdays || [];
 }
 
-// 発注月度（16日始まり15日締め）に対応した本人の発注情報を取得する
+// 発注月度（21日始まり20日締め）に対応した本人の発注情報を取得する
 // state.orders[date][employeeId] は { menuId, qty } の形で保持する（qtyはまれな複数個発注に対応するため）
 async function loadMyOrdersForMonth(periodYm){
   const {start, end} = periodRange(periodYm);
@@ -369,13 +369,13 @@ function daysInMonth(ym){
   return Array.from({length:last}, (_,i)=> `${y}-${String(m).padStart(2,"0")}-${String(i+1).padStart(2,"0")}`);
 }
 
-// 発注月度: "YYYY-MM"（例: "2026-08" = 8月度）は「前月16日〜当月15日」を表す
+// 発注月度: "YYYY-MM"（例: "2026-08" = 8月度）は「前月21日〜当月20日」を表す
 function periodRange(ym){
   let [y,m] = ym.split("-").map(Number);
   let sy = y, sm = m - 1;
   if(sm < 1){ sm = 12; sy--; }
-  const start = `${sy}-${String(sm).padStart(2,"0")}-16`;
-  const end = `${y}-${String(m).padStart(2,"0")}-15`;
+  const start = `${sy}-${String(sm).padStart(2,"0")}-21`;
+  const end = `${y}-${String(m).padStart(2,"0")}-20`;
   return { start, end };
 }
 
@@ -395,11 +395,11 @@ function datesInPeriod(ym){
   return datesInRange(start, end);
 }
 
-// 指定日が属する発注月度のラベル（"YYYY-MM"）を返す（16日以降ならその月の翌月扱い）
+// 指定日が属する発注月度のラベル（"YYYY-MM"）を返す（21日以降ならその月の翌月扱い）
 function periodLabelFor(dateStr){
   const d = new Date(dateStr+"T00:00:00");
   let y = d.getFullYear(), m = d.getMonth()+1;
-  if(d.getDate() >= 16){
+  if(d.getDate() >= 21){
     m += 1;
     if(m > 12){ m = 1; y++; }
   }
@@ -486,7 +486,7 @@ function render(){
 
 /* ===================== 発注タブ（社員向け） ===================== */
 let loginError = "";
-let calendarYearMonth = periodLabelFor(todayStr()); // "YYYY-MM"（16日始まり15日締めの発注月度）
+let calendarYearMonth = periodLabelFor(todayStr()); // "YYYY-MM"（21日始まり20日締めの発注月度）
 let batchMessage = "";
 
 function renderOrderTab(){
@@ -1459,7 +1459,7 @@ function renderReceiptAdmin(container){
   container.querySelector("#printReceiptBtn").onclick = ()=> window.print();
 }
 
-/* --- 月次集計（16日〜15日の発注月度でExcel出力。日付ごとの発注金額・数量が分かる明細形式＋部署別・メニュー別集計） --- */
+/* --- 月次集計（21日〜20日の発注月度でExcel出力。日付ごとの発注金額・数量が分かる明細形式＋部署別・メニュー別集計） --- */
 let monthlyYm = periodLabelFor(todayStr());
 let monthlyGroups = []; // 集計後: [{code, name, total, byDate: {date: amount}}]
 let monthlyMenuTotals = []; // 集計後: [{menuName, totalQty, totalAmount}]
@@ -1524,7 +1524,7 @@ function renderMonthlyAdmin(container){
     <div class="card no-print">
       <h2>集計する月度</h2>
       <input type="month" id="monthlyYmInput" value="${monthlyYm}">
-      <div class="hint">${Number(m)}月度 ＝ ${fmtDateJP(start)}〜${fmtDateJP(end)}（16日始まり15日締め）</div>
+      <div class="hint">${Number(m)}月度 ＝ ${fmtDateJP(start)}〜${fmtDateJP(end)}（21日始まり20日締め）</div>
       <button class="primary" id="monthlyRunBtn">集計する</button>
     </div>
     <div class="card">
