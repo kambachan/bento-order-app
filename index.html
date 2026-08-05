@@ -64,6 +64,8 @@
   .receipt-table .checkbox-box{width:12px;height:12px;}
   .receipt-table th.date-col,.receipt-table td.date-col{width:90px;}
   .receipt-table .dept-group-row td{background:#fff1e0;color:var(--main-dark);font-weight:bold;font-size:12px;padding:3px 8px;}
+  .receipt-table tr:nth-child(even) td{background:#f2f6fb;}
+  .receipt-page h2{margin:0 0 6px;}
   #faxSheetHolder{display:none;}
   .fax-sheet{width:100%;padding:20px;font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;}
   .fax-sheet h1{font-size:28px;text-align:center;border-bottom:3px solid #333;padding-bottom:14px;margin:0 0 26px;letter-spacing:4px;}
@@ -91,8 +93,9 @@
     body{background:#fff;}
     main{max-width:100%;padding:0;}
     .card{border:none;box-shadow:none;}
-    .receipt-table th,.receipt-table td{padding:1px 6px;font-size:11px;}
+    .receipt-table th,.receipt-table td{padding:1px 6px;font-size:13px;line-height:1.15;}
     .receipt-table .dept-group-row td{padding:2px 6px;}
+    .receipt-table tr:nth-child(even) td{background:#eef1f4 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     body.printing-fax > *:not(#faxSheetHolder){display:none !important;}
     body.printing-fax #faxSheetHolder{display:block;}
     .receipt-page{ page-break-after: always; }
