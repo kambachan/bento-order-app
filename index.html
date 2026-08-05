@@ -875,9 +875,13 @@ function renderEmployeesAdmin(container){
     </div>
     <div class="card">
       <h2>対象者一覧（${state.employees.length}名）</h2>
-      <div class="hint">「組織コード」の見出しをクリックすると並び順（昇順⇔降順）を切り替えられます。</div>
+      <div class="hint">「組織コード」の見出しをクリックすると並び順（昇順⇔降順）を切り替えられます。左端のチェックボックスで複数選択し、下の「選択した対象者を削除」でまとめて削除できます。</div>
+      <div class="no-print" style="margin-bottom:8px;">
+        <button class="danger" id="bulkDeleteEmpBtn">選択した対象者を削除</button>
+      </div>
       <table>
         <tr>
+          <th class="no-print"><input type="checkbox" id="selectAllEmpCheckbox"></th>
           <th>社員CD</th><th>氏名</th><th>部署</th>
           <th id="orgCodeSortHeader" style="cursor:pointer;white-space:nowrap;">組織コード ${empSortAsc ? "▲" : "▼"}</th>
           <th>集計用部署名</th>
@@ -885,6 +889,7 @@ function renderEmployeesAdmin(container){
         </tr>
         ${list.map(e=>`
           <tr>
+            <td class="no-print" style="text-align:center;"><input type="checkbox" class="empSelectCheckbox" data-id="${e.id}"></td>
             <td><input type="text" data-field="code" data-id="${e.id}" value="${e.code||""}"></td>
             <td><input type="text" data-field="name" data-id="${e.id}" value="${e.name}"></td>
             <td><input type="text" data-field="dept" data-id="${e.id}" value="${e.dept}"></td>
@@ -992,6 +997,34 @@ function renderEmployeesAdmin(container){
       });
     };
   });
+
+  container.querySelector("#selectAllEmpCheckbox").onchange = (e)=>{
+    container.querySelectorAll(".empSelectCheckbox").forEach(cb=>{ cb.checked = e.target.checked; });
+  };
+
+  container.querySelector("#bulkDeleteEmpBtn").onclick = ()=>{
+    const selectedIds = Array.from(container.querySelectorAll(".empSelectCheckbox:checked")).map(cb=>cb.dataset.id);
+    if(!selectedIds.length){ alert("削除する対象者を選択してください"); return; }
+    // 選択した対象者を削除した結果、管理者が1人もいなくなる場合は誤操作防止のため中止する
+    const remainingAdmins = state.employees.filter(e=> e.isAdmin && !selectedIds.includes(e.id)).length;
+    if(remainingAdmins === 0){
+      alert("選択した対象者を削除すると、管理者権限を持つ対象者が1人もいなくなります。先に他の対象者へ管理者権限を設定してから削除してください。");
+      return;
+    }
+    if(!confirm(`選択した${selectedIds.length}件の対象者を削除しますか？この操作は取り消せません。`)) return;
+    withLoading(async ()=>{
+      let deleted = 0, failed = 0;
+      for(const id of selectedIds){
+        try{
+          await sbRpc("rpc_admin_delete_employee", {p_token: session.token, p_id: id});
+          deleted++;
+        }catch(e){ failed++; }
+      }
+      const rows = await sbRpc("rpc_admin_list_employees", {p_token: session.token});
+      state.employees = rows.map(mapEmployee);
+      alert(`${deleted}件を削除しました${failed ? `（${failed}件は失敗しました）` : ""}`);
+    });
+  };
 
   container.querySelector("#csvInput").onchange = (e)=>{
     const file = e.target.files[0];
@@ -1173,6 +1206,13 @@ function renderDeadlineAdmin(container){
           </tr>`).join("") : `<tr><td colspan="2" class="hint">登録されている発注不可日はありません</td></tr>`}
       </table>
     </div>
+    <div class="card no-print" style="border:2px solid #c0392b;">
+      <h2 style="color:#c0392b;">⚠ テスト運用: 発注データの一括削除</h2>
+      <div class="hint" style="color:#c0392b;">この操作を実行すると、これまでに登録された発注データ（全対象者・全日付分）が全件削除されます。<strong>元に戻すことはできません。</strong>本運用を開始する前のテストデータ削除にのみ使用してください。</div>
+      <label>削除パスワード</label>
+      <input type="password" id="deleteOrdersPassword" placeholder="パスワードを入力">
+      <button class="danger" id="deleteAllOrdersBtn" style="margin-top:10px;">発注データを一括削除する</button>
+    </div>
   `;
 
   container.querySelector("#saveDlBtn").onclick = ()=>{
@@ -1199,6 +1239,21 @@ function renderDeadlineAdmin(container){
       withLoading(()=> saveSettingsPartial({ blockedDates: newBlocked }));
     };
   });
+
+  container.querySelector("#deleteAllOrdersBtn").onclick = ()=>{
+    const pwInput = container.querySelector("#deleteOrdersPassword");
+    const pw = pwInput.value;
+    if(pw !== "272348"){ alert("パスワードが正しくありません"); return; }
+    if(!confirm("本当にすべての発注データを削除しますか？この操作は取り消せません。")) return;
+    withLoading(async ()=>{
+      try{
+        const deletedCount = await sbRpc("rpc_admin_delete_all_orders", {p_token: session.token, p_password: pw});
+        state.orders = {}; // 発注画面のキャッシュもクリア
+        pwInput.value = "";
+        alert(`発注データを${deletedCount}件削除しました`);
+      }catch(e){ alert(friendlyError(e)); }
+    });
+  };
 }
 
 /* --- 発注集計・発注書 --- */
